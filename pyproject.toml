@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gaze-tracker"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "Alxander Vigovskiy", email = "valex@handy-cats.com" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<2.0",
+    "opencv-python>=4.8,<5.0",
+    "msgpack>=1.0,<2.0"
+]
+
+[project.scripts]
+gaze-tracker = "gaze_tracker.gaze_tracker:main"
+trajectory = "gaze_tracker.trajectory:main"
+heatmap = "gaze_tracker.heatmap:main"
