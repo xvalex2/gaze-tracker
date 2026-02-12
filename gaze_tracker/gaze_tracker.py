@@ -5,6 +5,7 @@ import msgpack
 from os.path import join
 from os.path import isfile
 from typing import NamedTuple
+from functools import reduce
 import time
 import csv
 
@@ -34,12 +35,13 @@ def find_homography(frame_keypoints, object_keypoints, matches, method = DEFAULT
     dst_pts = np.float32([ frame_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
     h, mask = cv2.findHomography(src_pts, dst_pts, method, threshold)
 
-    # Find outliers
+    # Find inliers, outliers
     if mask is not None:
         mask = mask.ravel()
+        inliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 1]
         outliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 0]
 
-    return h, outliers
+    return h, inliers, outliers
 
 
 def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_width):
@@ -272,9 +274,9 @@ def main():
     parser.add_argument('--sift_edge_threshold', required=False, default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
         help=f'SIFT detector edge threshold. The larger the threshold, the less features are filtered out. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
-    parser.add_argument('--show_object', action='store_true', help='Show object')
-    parser.add_argument('--show_object_keypoints', action='store_true', help='Show object')
-    parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints')
+    parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints, matches and outliers at video frame.')
+    parser.add_argument('--show_object', action='store_true', help='Show object.')
+    parser.add_argument('--show_object_keypoints', action='store_true', help='Show object''s keypoints.')
 
     parser.set_defaults(robust_method=DEFAULT_ROBUST_METHOD)
     args = parser.parse_args()
@@ -314,8 +316,16 @@ def main():
     # Object to track
     obj = TrackedObject(args.object, detector)
 
+    start_frame = args.start_frame if args.start_frame else 0
+    num_frames = (args.end_frame if args.end_frame else video_props.frames) - start_frame
     for frame_idx, frame in frame_generator(world_filename, args.start_frame, args.end_frame):
-        h, outliers, num_outliers, num_inliers = None, None, 0, 0
+        h = None
+        inliers = None
+        outliers = None
+        num_inliers = 0
+        num_outliers = 0
+        mean_match_distance = 0
+        mean_inlier_distance = 0
         object_image = obj.image.copy()
 
         # Undistort
@@ -327,17 +337,21 @@ def main():
         # Match & filter matches
         matches = matcher.knnMatch(descriptors, obj.descriptors, k = 2)
         filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
+        mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
 
         # Homography
         if len(filtered_matches) > args.min_matches:
-            h, outliers = find_homography(keypoints, obj.keypoints, filtered_matches, args.robust_method, args.robust_threshold)
+            h, inliers, outliers = find_homography(keypoints, obj.keypoints, filtered_matches, args.robust_method, args.robust_threshold)
             h_inv = np.linalg.pinv(h)
+            num_inliers = len(inliers)
             num_outliers = len(outliers)
+            mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / num_inliers
+
             # Check minimum number of matches
-            num_inliers = len(filtered_matches) - num_outliers
             if num_inliers < args.min_matches:
                 h = None
 
+        # Reproject gaze points
         gaze = gaze_data.gaze_for_frame(frame_idx);
         if h is not None and len(gaze) > 0:
             width, height = resolution
@@ -349,11 +363,13 @@ def main():
                 gaze[i]['object_x'] = object_points[i][0][0]
                 gaze[i]['object_y'] = object_points[i][0][1]
             data_writer.write(gaze)
+
+            # Draw gaze
+            out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, (255, 0, 0), 3, cv2.LINE_AA)
             if args.show_object:
                 cv2.polylines(object_image, [np.int32(object_points)], False, (255, 0, 0), 3, cv2.LINE_AA)
-            out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, (255, 0, 0), 3, cv2.LINE_AA)
 
-        # Draw video keypoints, matches, outliers
+        # Draw video keypoints, matches, outliers (video frame)
         if args.show_keypoints:
             filtered_points = [ keypoints[m.queryIdx] for m in filtered_matches ]
             out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
@@ -362,7 +378,7 @@ def main():
                 outlier_points = [ keypoints[m.queryIdx] for m in outliers ]
                 out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
 
-        # Draw object keypoints, matches, outliers
+        # Draw object keypoints, matches, outliers (object)
         if args.show_object_keypoints:
             filtered_points = [ obj.keypoints[m.trainIdx] for m in filtered_matches ]
             object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
@@ -375,18 +391,24 @@ def main():
         if h is not None:
             out_frame = draw_bounding_box(out_frame, h, obj.w, obj.h, (0, 0, 255), 2)
 
+        # Draw info text at video frame
         video_text  = f"Frame {frame_idx}\n"
         video_text += f"Keypoints (green): {len(keypoints)}\n"
         video_text += f"Matches (red): {len(filtered_matches)}\n"
         video_text += f"Outliers (blue): {num_outliers}\n"
         video_text += f"Inliers: {num_inliers}\n"
+        video_text += f"Mean match distance: {mean_match_distance:.1f}\n"
+        video_text += f"Mean inlier distance: {mean_inlier_distance:.1f}\n"
         draw_text(out_frame, video_text, 16, 30)
 
         video_out.write(out_frame)
+
         if object_image is not None and args.show_object:
             cv2.imshow('Object', object_image)
         cv2.imshow('Frame', out_frame)
-        print(f"Frame {frame_idx}, keypoints: {len(keypoints)}, matches: {len(filtered_matches)}     \r", end='')
+        
+        # Show process status at terminal
+        print(f"Frame {frame_idx} ({(frame_idx-start_frame)*100/num_frames:.1f}%)     \r", end='')
 
         # Process keys
         should_stop = handle_events()
