@@ -42,6 +42,8 @@ def main():
     while i < data_len:
         while i < data_len and not is_continuous(data[i], data[i+1]):
             i += 1
+        if i >= data_len:
+            break
         segment_start = i
         while i < data_len and is_continuous(data[i], data[i+1]):
             i += 1
