@@ -8,6 +8,7 @@ from typing import NamedTuple
 from functools import reduce
 import time
 import csv
+import sys
 
 DEFAULT_VIDEO_SCALE = 1.2
 DEFAULT_UNDISTORT_ALPHA = 0.5
@@ -29,10 +30,10 @@ def lowe_filter(matches, ratio):
     return result
 
 
-def find_homography(frame_keypoints, object_keypoints, matches, method = DEFAULT_ROBUST_METHOD, threshold = DEFAULT_ROBUST_THRESHOLD):
+def find_homography(object_keypoints, frame_keypoints, matches, method = DEFAULT_ROBUST_METHOD, threshold = DEFAULT_ROBUST_THRESHOLD):
     # Find homography
-    src_pts = np.float32([ object_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
-    dst_pts = np.float32([ frame_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
+    src_pts = np.float32([ object_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
+    dst_pts = np.float32([ frame_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
     h, mask = cv2.findHomography(src_pts, dst_pts, method, threshold)
 
     # Find inliers, outliers
@@ -276,10 +277,12 @@ def main():
     
     parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints, matches and outliers at video frame.')
     parser.add_argument('--show_object', action='store_true', help='Show object.')
-    parser.add_argument('--show_object_keypoints', action='store_true', help='Show object''s keypoints.')
+    parser.add_argument('--show_object_keypoints', action='store_true', help='Show object''s keypoints. Implicitly enables --show_object.')
 
     parser.set_defaults(robust_method=DEFAULT_ROBUST_METHOD)
     args = parser.parse_args()
+    if args.show_object_keypoints:
+        args.show_object = True
 
     world_filename = join(args.data_path, 'world.mp4')
     intrinsics_filename = join(args.data_path, 'world.intrinsics')
@@ -316,6 +319,19 @@ def main():
     # Object to track
     obj = TrackedObject(args.object, detector)
 
+    # Configure OpenCV windows
+    if sys.platform == "win32":
+        # Disable DPI scaling
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+
+    cv2.namedWindow('Frame', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow('Frame', out_resolution[0], out_resolution[1])
+    if args.show_object:
+        cv2.namedWindow('Object', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        cv2.resizeWindow('Object', obj.w, obj.h)
+
+    # Main loop
     start_frame = args.start_frame if args.start_frame else 0
     num_frames = (args.end_frame if args.end_frame else video_props.frames) - start_frame
     for frame_idx, frame in frame_generator(world_filename, args.start_frame, args.end_frame):
@@ -335,13 +351,13 @@ def main():
         keypoints, descriptors = detector.detectAndCompute(out_frame, None)
 
         # Match & filter matches
-        matches = matcher.knnMatch(descriptors, obj.descriptors, k = 2)
+        matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
         filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
         mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
 
         # Homography
         if len(filtered_matches) > args.min_matches:
-            h, inliers, outliers = find_homography(keypoints, obj.keypoints, filtered_matches, args.robust_method, args.robust_threshold)
+            h, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.robust_method, args.robust_threshold)
             h_inv = np.linalg.pinv(h)
             num_inliers = len(inliers)
             num_outliers = len(outliers)
@@ -371,20 +387,20 @@ def main():
 
         # Draw video keypoints, matches, outliers (video frame)
         if args.show_keypoints:
-            filtered_points = [ keypoints[m.queryIdx] for m in filtered_matches ]
+            filtered_points = [ keypoints[m.trainIdx] for m in filtered_matches ]
             out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
             out_frame = cv2.drawKeypoints(out_frame, filtered_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
             if num_outliers > 0:
-                outlier_points = [ keypoints[m.queryIdx] for m in outliers ]
+                outlier_points = [ keypoints[m.trainIdx] for m in outliers ]
                 out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
 
         # Draw object keypoints, matches, outliers (object)
         if args.show_object_keypoints:
-            filtered_points = [ obj.keypoints[m.trainIdx] for m in filtered_matches ]
+            filtered_points = [ obj.keypoints[m.queryIdx] for m in filtered_matches ]
             object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
             object_image = cv2.drawKeypoints(object_image, filtered_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
             if num_outliers > 0:
-                outlier_points = [ obj.keypoints[m.trainIdx] for m in outliers ]
+                outlier_points = [ obj.keypoints[m.queryIdx] for m in outliers ]
                 object_image = cv2.drawKeypoints(object_image, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
 
         # Draw bounding box
@@ -417,6 +433,7 @@ def main():
 
     data_writer.close()
     video_out.release()
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
