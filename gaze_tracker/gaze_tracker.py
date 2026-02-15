@@ -30,19 +30,22 @@ def lowe_filter(matches, ratio):
     return result
 
 
-def find_homography(object_keypoints, frame_keypoints, matches, method = DEFAULT_ROBUST_METHOD, threshold = DEFAULT_ROBUST_THRESHOLD):
+def find_homography(object_keypoints, frame_keypoints, matches, min_matches, robust_method, threshold):
     # Find homography
     src_pts = np.float32([ object_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
     dst_pts = np.float32([ frame_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
-    h, mask = cv2.findHomography(src_pts, dst_pts, method, threshold)
+    h, mask = cv2.findHomography(src_pts, dst_pts, robust_method, threshold)
 
-    # Find inliers, outliers
-    if mask is not None:
+    # Find inliers, outliers, check minimum number of matches
+    if h is not None:
         mask = mask.ravel()
         inliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 1]
         outliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 0]
+        if len(inliers) >= min_matches:
+            return h, inliers, outliers
 
-    return h, inliers, outliers
+    # No solution, all matches are outliers
+    return None, [], matches.copy()
 
 
 def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_width):
@@ -295,7 +298,7 @@ def main():
             print(f"Error: file does not extst: {f}")
             exit(-1)
 
-    # Input video, intrinsics and undistorter
+    # Init undistorter
     video_props = VideoProps.from_file(world_filename)
     resolution = video_props.width, video_props.height
     out_resolution = int(video_props.width * args.video_scale), int(video_props.height * args.video_scale)
@@ -335,11 +338,8 @@ def main():
     start_frame = args.start_frame if args.start_frame else 0
     num_frames = (args.end_frame if args.end_frame else video_props.frames) - start_frame
     for frame_idx, frame in frame_generator(world_filename, args.start_frame, args.end_frame):
-        h = None
-        inliers = None
-        outliers = None
-        num_inliers = 0
-        num_outliers = 0
+        h, h_inv = None, None
+        inliers, outliers = None, None
         mean_match_distance = 0
         mean_inlier_distance = 0
         object_image = obj.image.copy()
@@ -353,19 +353,18 @@ def main():
         # Match & filter matches
         matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
         filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
-        mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
+        if len(filtered_matches):
+            mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
 
         # Homography
         if len(filtered_matches) > args.min_matches:
-            h, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.robust_method, args.robust_threshold)
-            h_inv = np.linalg.pinv(h)
-            num_inliers = len(inliers)
-            num_outliers = len(outliers)
-            mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / num_inliers
+            h, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.robust_method, args.robust_threshold)
+            if h is not None:
+                h_inv = np.linalg.pinv(h)
+                mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / len(inliers)
 
-            # Check minimum number of matches
-            if num_inliers < args.min_matches:
-                h = None
+        # matches_img = cv2.drawMatches(object_image,obj.keypoints,out_frame,keypoints,inliers,None,(255, 0, 0), (0,255,0))
+        # cv2.imshow('Matches', matches_img)
 
         # Reproject gaze points
         gaze = gaze_data.gaze_for_frame(frame_idx);
@@ -385,23 +384,25 @@ def main():
             if args.show_object:
                 cv2.polylines(object_image, [np.int32(object_points)], False, (255, 0, 0), 3, cv2.LINE_AA)
 
-        # Draw video keypoints, matches, outliers (video frame)
+        # Draw video keypoints, inliers, outliers (video frame)
         if args.show_keypoints:
-            filtered_points = [ keypoints[m.trainIdx] for m in filtered_matches ]
             out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
-            out_frame = cv2.drawKeypoints(out_frame, filtered_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
-            if num_outliers > 0:
+            if len(outliers) > 0:
                 outlier_points = [ keypoints[m.trainIdx] for m in outliers ]
                 out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+            if len(inliers) > 0:
+                outlier_points = [ keypoints[m.trainIdx] for m in inliers ]
+                out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
 
-        # Draw object keypoints, matches, outliers (object)
+        # Draw object keypoints, inliers, outliers (object)
         if args.show_object_keypoints:
-            filtered_points = [ obj.keypoints[m.queryIdx] for m in filtered_matches ]
             object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
-            object_image = cv2.drawKeypoints(object_image, filtered_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
-            if num_outliers > 0:
+            if len(outliers) > 0:
                 outlier_points = [ obj.keypoints[m.queryIdx] for m in outliers ]
                 object_image = cv2.drawKeypoints(object_image, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+            if len(inliers) > 0:
+                outlier_points = [ obj.keypoints[m.queryIdx] for m in inliers ]
+                object_image = cv2.drawKeypoints(object_image, outlier_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
 
         # Draw bounding box
         if h is not None:
@@ -410,9 +411,9 @@ def main():
         # Draw info text at video frame
         video_text  = f"Frame {frame_idx}\n"
         video_text += f"Keypoints (green): {len(keypoints)}\n"
-        video_text += f"Matches (red): {len(filtered_matches)}\n"
-        video_text += f"Outliers (blue): {num_outliers}\n"
-        video_text += f"Inliers: {num_inliers}\n"
+        video_text += f"Matches: {len(filtered_matches)}\n"
+        video_text += f"* Inliers (red): {len(inliers)}\n"
+        video_text += f"* Outliers (blue): {len(outliers)}\n"
         video_text += f"Mean match distance: {mean_match_distance:.1f}\n"
         video_text += f"Mean inlier distance: {mean_inlier_distance:.1f}\n"
         draw_text(out_frame, video_text, 16, 30)
