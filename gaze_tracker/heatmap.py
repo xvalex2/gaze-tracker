@@ -12,14 +12,16 @@ DEFAULT_ALPHA = 0.5
 def main():
     parser = argparse.ArgumentParser(
         prog='heatmap',
-        description='Draws dwell time heatmap in the object plane.')
-    parser.add_argument('object',    help='Image of tracked object')
-    parser.add_argument('gaze',      help='Object plane gaze data CSV')
-    parser.add_argument('out_image', help='Resulting image')
+        description='Draws a dwell-time heatmap in the object plane.')
+    parser.add_argument('object',    help='Image of the tracked object.')
+    parser.add_argument('gaze',      help='Gaze data in the object plane (CSV file).')
+    parser.add_argument('out_image', help='Output image.')
     parser.add_argument('--alpha', required=False, default=DEFAULT_ALPHA, type=float,
-        help=f'Default is {DEFAULT_ALPHA}.')
+        help=f'Heatmap transparency over the original image. Default is {DEFAULT_ALPHA}.')
     parser.add_argument('--sigma', required=False, default=DEFAULT_SIGMA, type=float,
-        help=f'Default is {DEFAULT_SIGMA}.')
+        help=f'Gaussian blur sigma for the heatmap. Default is {DEFAULT_SIGMA}.')
+    parser.add_argument('--disable-confidence-filter', action='store_true', 
+        help='Do not filter out gaze points with zero confidence.')
 
     args = parser.parse_args()
 
@@ -32,16 +34,18 @@ def main():
     data = None
     with open(args.gaze) as csvfile:
         csvfile.readline() # skip header
-        fieldnames = ['timestamp', 'confidence', 'norm_pos_x', 'norm_pos_y', 'frame', 'frame_timestamp', 'object_x', 'object_y']
+        fieldnames = [ 'timestamp', 'confidence', 'norm_pos_x', 'norm_pos_y', 
+                       'frame', 'frame_timestamp', 
+                       'object_x', 'object_y', 'object_norm_x', 'object_norm_y']
         reader = csv.DictReader(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_NONNUMERIC)
         data = [row for row in reader]
         data_len = len(data)
 
-    x = [ row['object_x'] for row in data if row['confidence'] > 0 ]
-    y = [ row['object_y'] for row in data if row['confidence'] > 0 ]
-
     image = cv2.imread(args.object)
     h, w, _ = image.shape
+
+    x = [ row['object_norm_x'] * w for row in data if row['confidence'] > 0 or args.disable_confidence_filter ]
+    y = [ (1.0 - row['object_norm_y']) * h for row in data if row['confidence'] > 0 or args.disable_confidence_filter ]
 
     heatmap, xedges, yedges = np.histogram2d(x, y, bins=(w, h), range=[[0, w], [0, h]])
     extent = [xedges[0], xedges[-1], yedges[-1], yedges[0]]

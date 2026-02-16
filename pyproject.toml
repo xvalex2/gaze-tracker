@@ -7,7 +7,7 @@ name = "gaze-tracker"
 version = "0.1.0"
 description = ""
 authors = [
-    { name = "Alxander Vigovskiy", email = "valex@handy-cats.com" }
+    { name = "Alexander Vigovskiy", email = "valex@handy-cats.com" }
 ]
 readme = "README.md"
 requires-python = ">=3.10"

@@ -21,6 +21,22 @@ DEFAULT_ROBUST_THRESHOLD = 5
 DEFAULT_SIFT_CONTRAST_THRESHOLD = 0.04
 DEFAULT_SIFT_EDGE_THRESHOLD = 10.0
 
+GAZE_COLOR = (255, 0, 0)
+GAZE_THICKNESS = 3
+
+KEYPOINT_COLOR = (0, 255, 0)
+INLIER_COLOR = (0, 0, 255)
+OUTLIER_COLOR = (255, 0, 0)
+
+BOUNDING_BOX_COLOR = (0, 0, 255)
+BOUNDING_BOX_THICKNESS = 2
+
+TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
+TEXT_SCALE = 0.5
+TEXT_COLOR = (128, 0, 0)
+TEXT_THICKNESS = 1
+TEXT_LINE_SPACING = 1.5
+
 
 def lowe_filter(matches, ratio):
     result = []
@@ -55,16 +71,10 @@ def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_wi
 
 
 def draw_text(image, text, x, y):
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.5
-    thickness = 1
-    color = (128, 0, 0)
-    line_spacing = 1.5
-
-    text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
-    line_height = int(text_size[1] * line_spacing)
+    text_size, _ = cv2.getTextSize(text, TEXT_FONT, TEXT_SCALE, TEXT_THICKNESS)
+    line_height = int(text_size[1] * TEXT_LINE_SPACING)
     for i, line in enumerate(text.split("\n")):
-        cv2.putText(image, line, (x, y), font, font_scale, color, thickness, cv2.LINE_AA)
+        cv2.putText(image, line, (x, y), TEXT_FONT, TEXT_SCALE, TEXT_COLOR, TEXT_THICKNESS, cv2.LINE_AA)
         y = y + line_height
 
 
@@ -220,7 +230,9 @@ class GazeData:
 class DataWriter:
     def __init__(self, filename):
         self.csvfile = open(filename, 'w', newline='', encoding='utf-8')
-        self.fieldnames = ['timestamp', 'confidence', 'norm_pos_x', 'norm_pos_y', 'frame', 'frame_timestamp', 'object_x', 'object_y']
+        self.fieldnames = [ 'timestamp', 'confidence', 'norm_pos_x', 'norm_pos_y', 
+                            'frame', 'frame_timestamp', 
+                            'object_x', 'object_y', 'object_norm_x', 'object_norm_y']
         self.writer = csv.DictWriter(self.csvfile, fieldnames=self.fieldnames)
         self.writer.writeheader()
 
@@ -243,44 +255,44 @@ class TrackedObject:
 def main():
     parser = argparse.ArgumentParser(
         prog='gaze-tracker',
-        description='Converts eye-tracking coordinates from video plane to the 2D plane of the observed object.')
-    parser.add_argument('data_path', help='Path to the data folder')
-    parser.add_argument('object',    help='Image of object to track')
-    parser.add_argument('video_out', help='Resulting video file')
-    parser.add_argument('data_out',  help='Resulting CSV data file')
+        description='Converts eye-tracking coordinates from the video plane to the plane of the observed object.')
+    parser.add_argument('data_path', help='Path to the data folder.')
+    parser.add_argument('object',    help='Image of the object to track.')
+    parser.add_argument('video_out', help='Output video file.')
+    parser.add_argument('data_out',  help='Output CSV file.')
 
     parser.add_argument('--start_frame', required=False, default=None, type=int,
-        help='First frame to process.')
+        help='The first frame to process.')
     parser.add_argument('--end_frame', required=False, default=None, type=int,
-        help='Last frame to process.')
+        help='The last frame to process.')
 
     parser.add_argument('--video_scale', required=False, default=DEFAULT_VIDEO_SCALE, type=float,
-        help=f'Scale output video. Default is {DEFAULT_VIDEO_SCALE}.')
+        help=f'Scale factor for the resolution of the output video. Default is {DEFAULT_VIDEO_SCALE}.')
     parser.add_argument('--undistort_alpha', required=False, default=DEFAULT_UNDISTORT_ALPHA, type=float,
-        help=f'Undistortion scaling parameter. 0 - all the pixels in the undistorted image are valid. 1 - all the source image pixels are retained in the undistorted image. Default is {DEFAULT_UNDISTORT_ALPHA}.')
+        help=f'Undistortion scaling parameter. 0: all the pixels in the undistorted image are valid; 1: all the source image pixels are retained in the undistorted image. Default is {DEFAULT_UNDISTORT_ALPHA}.')
     parser.add_argument('--lowe_filter_ratio', required=False, default=DEFAULT_LOWE_FILTER_RATIO, type=float,
-        help=f'Lowe filter ratio. 0 - filter out everything. 1 - no filtering. Default is: {DEFAULT_LOWE_FILTER_RATIO}.')
+        help=f'Lowe filter ratio. 0: filter out all matches; 1: no filtering. Default is {DEFAULT_LOWE_FILTER_RATIO}.')
     parser.add_argument('--min_matches', required=False, default=DEFAULT_MIN_MATCHES, type=int,
-        help=f'Minimum number of matches for homography estimation. Default is: {DEFAULT_MIN_MATCHES}.')
+        help=f'Minimum number of matches for homography estimation. Default is {DEFAULT_MIN_MATCHES}.')
 
     parser.add_argument('--robust_threshold', required=False, default=DEFAULT_ROBUST_THRESHOLD, type=float,
-        help=f'Threshold for RANSAC/RHO robust method. Default: {DEFAULT_ROBUST_THRESHOLD}')
+        help=f'Threshold used in RANSAC/RHO robust method. Default is {DEFAULT_ROBUST_THRESHOLD}')
     robust_method_group = parser.add_mutually_exclusive_group()
     robust_method_group.add_argument('--ransac', action='store_const', dest='robust_method', const=cv2.RANSAC,
-        help='Use RANSAC robust method')
+        help='Use the RANSAC algorithm for outlier detection.')
     robust_method_group.add_argument('--rho', action='store_const', dest='robust_method', const=cv2.RHO,
-        help='Use RHO robust method')
+        help='Use the RHO algorithm for outlier detection.')
     robust_method_group.add_argument('--lemeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
-        help='Use LMedS robust method')
+        help='Use the LMedS algorithm for outlier detection. This is the default algorithm.')
 
     parser.add_argument('--sift_contrast_threshold', required=False, default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
-        help=f'SIFT detector contrast threshold. The larger the threshold, the less features are produced by the detector. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
+        help=f'SIFT detector contrast threshold. Higher values produce fewer features. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
     parser.add_argument('--sift_edge_threshold', required=False, default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
-        help=f'SIFT detector edge threshold. The larger the threshold, the less features are filtered out. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
+        help=f'SIFT detector edge threshold. Higher values retain more features. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
-    parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints, matches and outliers at video frame.')
-    parser.add_argument('--show_object', action='store_true', help='Show object.')
-    parser.add_argument('--show_object_keypoints', action='store_true', help='Show object''s keypoints. Implicitly enables --show_object.')
+    parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints, matches, and outliers on the video frame.')
+    parser.add_argument('--show_object', action='store_true', help='Display the object and overlay the gaze track.')
+    parser.add_argument('--show_object_keypoints', action='store_true', help='Display the object\'s keypoints. This also enables --show_object.')
 
     parser.set_defaults(robust_method=DEFAULT_ROBUST_METHOD)
     args = parser.parse_args()
@@ -339,7 +351,9 @@ def main():
     num_frames = (args.end_frame if args.end_frame else video_props.frames) - start_frame
     for frame_idx, frame in frame_generator(world_filename, args.start_frame, args.end_frame):
         h, h_inv = None, None
-        inliers, outliers = None, None
+        inliers, outliers = [], []
+        keypoints, descriptors = [], []
+        matches, filtered_matches = [], []
         mean_match_distance = 0
         mean_inlier_distance = 0
         object_image = obj.image.copy()
@@ -350,11 +364,12 @@ def main():
         # Find keypoints
         keypoints, descriptors = detector.detectAndCompute(out_frame, None)
 
-        # Match & filter matches
-        matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
-        filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
-        if len(filtered_matches):
-            mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
+        if len(keypoints) > 0:
+            # Match & filter matches
+            matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
+            filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
+            if len(filtered_matches):
+                mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
 
         # Homography
         if len(filtered_matches) > args.min_matches:
@@ -363,50 +378,48 @@ def main():
                 h_inv = np.linalg.pinv(h)
                 mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / len(inliers)
 
-        # matches_img = cv2.drawMatches(object_image,obj.keypoints,out_frame,keypoints,inliers,None,(255, 0, 0), (0,255,0))
-        # cv2.imshow('Matches', matches_img)
-
-        # Reproject gaze points
+        # Project gaze points to object plane
         gaze = gaze_data.gaze_for_frame(frame_idx);
         if h is not None and len(gaze) > 0:
-            width, height = resolution
-            gaze_points = [ [ g['norm_pos_x'] * width, (1 - g['norm_pos_y']) * height ] for g in gaze ]
+            gaze_points = [ [ g['norm_pos_x'] * video_props.width, (1 - g['norm_pos_y']) * video_props.height ] for g in gaze ]
             gaze_points = np.float32(gaze_points).reshape(-1,1,2)
             gaze_points_undistorted = undistorter.undistort_points(gaze_points)
             object_points = cv2.perspectiveTransform(gaze_points_undistorted, h_inv)
             for i in range(0, len(gaze)):
                 gaze[i]['object_x'] = object_points[i][0][0]
                 gaze[i]['object_y'] = object_points[i][0][1]
+                gaze[i]['object_norm_x'] = object_points[i][0][0] / obj.w
+                gaze[i]['object_norm_y'] = 1.0 - (object_points[i][0][1] / obj.h)
             data_writer.write(gaze)
 
             # Draw gaze
-            out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, (255, 0, 0), 3, cv2.LINE_AA)
+            out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, GAZE_COLOR, GAZE_THICKNESS, cv2.LINE_AA)
             if args.show_object:
-                cv2.polylines(object_image, [np.int32(object_points)], False, (255, 0, 0), 3, cv2.LINE_AA)
+                cv2.polylines(object_image, [np.int32(object_points)], False, GAZE_COLOR, GAZE_THICKNESS, cv2.LINE_AA)
 
-        # Draw video keypoints, inliers, outliers (video frame)
+        # Draw keypoints, inliers, outliers at video frame
         if args.show_keypoints:
-            out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+            out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, KEYPOINT_COLOR)
             if len(outliers) > 0:
-                outlier_points = [ keypoints[m.trainIdx] for m in outliers ]
-                out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+                points = [ keypoints[m.trainIdx] for m in outliers ]
+                out_frame = cv2.drawKeypoints(out_frame, points, 0, OUTLIER_COLOR)
             if len(inliers) > 0:
-                outlier_points = [ keypoints[m.trainIdx] for m in inliers ]
-                out_frame = cv2.drawKeypoints(out_frame, outlier_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+                points = [ keypoints[m.trainIdx] for m in inliers ]
+                out_frame = cv2.drawKeypoints(out_frame, points, 0, INLIER_COLOR)
 
-        # Draw object keypoints, inliers, outliers (object)
+        # Draw keypoints, inliers, outliers at object
         if args.show_object_keypoints:
-            object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, (0, 255, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+            object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, KEYPOINT_COLOR)
             if len(outliers) > 0:
-                outlier_points = [ obj.keypoints[m.queryIdx] for m in outliers ]
-                object_image = cv2.drawKeypoints(object_image, outlier_points, 0, (255, 0, 0), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+                points = [ obj.keypoints[m.queryIdx] for m in outliers ]
+                object_image = cv2.drawKeypoints(object_image, points, 0, OUTLIER_COLOR)
             if len(inliers) > 0:
-                outlier_points = [ obj.keypoints[m.queryIdx] for m in inliers ]
-                object_image = cv2.drawKeypoints(object_image, outlier_points, 0, (0, 0, 255), flags=cv2.DRAW_MATCHES_FLAGS_DEFAULT)
+                points = [ obj.keypoints[m.queryIdx] for m in inliers ]
+                object_image = cv2.drawKeypoints(object_image, points, 0, INLIER_COLOR)
 
         # Draw bounding box
         if h is not None:
-            out_frame = draw_bounding_box(out_frame, h, obj.w, obj.h, (0, 0, 255), 2)
+            out_frame = draw_bounding_box(out_frame, h, obj.w, obj.h, BOUNDING_BOX_COLOR, BOUNDING_BOX_THICKNESS)
 
         # Draw info text at video frame
         video_text  = f"Frame {frame_idx}\n"
@@ -427,7 +440,7 @@ def main():
         # Show process status at terminal
         print(f"Frame {frame_idx} ({(frame_idx-start_frame)*100/num_frames:.1f}%)     \r", end='')
 
-        # Process keys
+        # Process events and keys
         should_stop = handle_events()
         if should_stop:
             break
