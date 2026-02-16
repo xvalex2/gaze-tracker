@@ -13,10 +13,10 @@
 
 Gaze-Tracker uses recordings from [**Pupil Player**](https://github.com/pupil-labs/pupil). Required files:
 
-* `world.mp4` – video from the external camera
-* `world.intrinsics` – camera intrinsics
-* `world_timestamps.npy` – timestamps for each video frame
-* `gaze.pldata` – gaze direction data
+* `world.mp4` - video from the external camera
+* `world.intrinsics` - camera intrinsics
+* `world_timestamps.npy` - timestamps for each video frame
+* `gaze.pldata` - gaze data
 
 ## Installation
 
@@ -53,20 +53,20 @@ usage: gaze-tracker [-h] [options] data_path object video_out data_out
 
 **Positional arguments:**
 
-* `data_path` – path to the data folder
-* `object` – image of the target object
-* `video_out` – output video file
-* `data_out` – output CSV file
+* `data_path` - path to the data folder
+* `object` - image of the target object
+* `video_out` - output video file
+* `data_out` - output CSV file
 
 **Options include:**
 
-* `--start_frame`, `--end_frame` – process a subset of frames
-* `--video_scale` – scale factor for output video
-* `--undistort_alpha` – camera undistortion scaling
-* `--lowe_filter_ratio`, `--min_matches` – feature matching parameters
-* `--ransac`, `--rho`, `--lemeds` – outlier detection algorithms
-* `--sift_contrast_threshold`, `--sift_edge_threshold` – SIFT parameters
-* `--show_keypoints`, `--show_object`, `--show_object_keypoints` – visualization options
+* `--start_frame`, `--end_frame` - process a subset of frames
+* `--video_scale` - scale factor for output video
+* `--undistort_alpha` - camera undistortion scaling
+* `--lowe_filter_ratio`, `--min_matches` - feature matching parameters
+* `--ransac`, `--rho`, `--lemeds` - outlier detection algorithms
+* `--sift_contrast_threshold`, `--sift_edge_threshold` - SIFT parameters
+* `--show_keypoints`, `--show_object`, `--show_object_keypoints` - visualization options
 
 ### `trajectory`
 
@@ -78,13 +78,13 @@ usage: trajectory [-h] [--disable-confidence-filter] object gaze out_image
 
 **Arguments:**
 
-* `object` – image of the tracked object
-* `gaze` – gaze CSV file in object coordinates
-* `out_image` – output image file
+* `object` - image of the tracked object
+* `gaze` - gaze CSV file in object coordinates
+* `out_image` - output image file
 
 **Option:**
 
-* `--disable-confidence-filter` – include all gaze points, even those with zero confidence
+* `--disable-confidence-filter` - include all gaze points, even those with zero confidence
 
 ### `heatmap`
 
@@ -96,21 +96,23 @@ usage: heatmap [-h] [--alpha ALPHA] [--sigma SIGMA] [--disable-confidence-filter
 
 **Arguments:**
 
-* `object` – image of the tracked object
-* `gaze` – gaze CSV file in object coordinates
-* `out_image` – output image file
+* `object` - image of the tracked object
+* `gaze` - gaze CSV file in object coordinates
+* `out_image` - output image file
 
 **Options:**
 
-* `--alpha` – transparency of heatmap overlay (default 0.5)
-* `--sigma` – Gaussian blur sigma (default 10)
-* `--disable-confidence-filter` – include all gaze points
-
----
+* `--alpha` - transparency of heatmap overlay (default 0.5)
+* `--sigma` - gaussian blur sigma (default 10)
+* `--disable-confidence-filter` - include all gaze points, even those with zero confidence
 
 ## Example Workflow
 
 ```bash
+# Activate a virtual environment
+source gaze-tracker/venv/bin/activate       # Linux
+call gaze-tracker\venv\Scripts\activate.bat # Windows
+
 # Step 1: Convert gaze data to object coordinates
 gaze-tracker path/to/data painting.jpg output_video.mp4 gaze.csv
 
