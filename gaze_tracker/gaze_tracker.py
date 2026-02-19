@@ -61,7 +61,7 @@ def find_homography(object_keypoints, frame_keypoints, matches, min_matches, rob
             return h, inliers, outliers
 
     # No solution, all matches are outliers
-    return None, [], matches.copy()
+    return None, [], matches
 
 
 def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_width):
@@ -177,7 +177,7 @@ class Undistorter:
         self.camera_matrix = camera_matrix
         self.dist_coefs = dist_coefs
         self.resolution = resolution
-        self.new_resolution = new_resolution if new_resolution else resulution
+        self.new_resolution = new_resolution if new_resolution else resolution
         self.alpha = alpha
         self.new_camera_matrix, self.roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coefs, resolution, alpha, new_resolution)
         self.mapx, self.mapy = cv2.initUndistortRectifyMap(camera_matrix, dist_coefs, None, self.new_camera_matrix, new_resolution, cv2.CV_32FC1)
@@ -290,14 +290,17 @@ def main():
     parser.add_argument('--sift_edge_threshold', required=False, default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
         help=f'SIFT detector edge threshold. Higher values retain more features. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
-    parser.add_argument('--show_keypoints', action='store_true', help='Show keypoints, matches, and outliers on the video frame.')
+    parser.add_argument('--show_inliers', action='store_true', help='Show inlier keypoints.')
+    parser.add_argument('--show_outliers', action='store_true', help='Show outlier keypoints.')
+    parser.add_argument('--show_keypoints', action='store_true', help='Show all keypoints, including unmatched.')
     parser.add_argument('--show_object', action='store_true', help='Display the object and overlay the gaze track.')
-    parser.add_argument('--show_object_keypoints', action='store_true', help='Display the object\'s keypoints. This also enables --show_object.')
+    parser.add_argument('--show_matches', action='store_true', help='Display keypoint correspondance.')
 
     parser.set_defaults(robust_method=DEFAULT_ROBUST_METHOD)
     args = parser.parse_args()
-    if args.show_object_keypoints:
-        args.show_object = True
+    if args.show_keypoints:
+        args.show_outliers = True
+        args.show_inliers = True
 
     world_filename = join(args.data_path, 'world.mp4')
     intrinsics_filename = join(args.data_path, 'world.intrinsics')
@@ -345,6 +348,11 @@ def main():
     if args.show_object:
         cv2.namedWindow('Object', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
         cv2.resizeWindow('Object', obj.w, obj.h)
+    if args.show_matches:
+        cv2.namedWindow('Matches', cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+        window_width = int((obj.w + out_resolution[0]) / 2)
+        window_height = int(max(obj.h, out_resolution[1]) / 2)
+        cv2.resizeWindow('Matches', window_width, window_height)
 
     # Main loop
     start_frame = args.start_frame if args.start_frame else 0
@@ -364,8 +372,8 @@ def main():
         # Find keypoints
         keypoints, descriptors = detector.detectAndCompute(out_frame, None)
 
+        # Match & filter matches
         if len(keypoints) > 0:
-            # Match & filter matches
             matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
             filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
             if len(filtered_matches):
@@ -379,7 +387,7 @@ def main():
                 mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / len(inliers)
 
         # Project gaze points to object plane
-        gaze = gaze_data.gaze_for_frame(frame_idx);
+        gaze = gaze_data.gaze_for_frame(frame_idx)
         if h is not None and len(gaze) > 0:
             gaze_points = [ [ g['norm_pos_x'] * video_props.width, (1 - g['norm_pos_y']) * video_props.height ] for g in gaze ]
             gaze_points = np.float32(gaze_points).reshape(-1,1,2)
@@ -400,26 +408,38 @@ def main():
         # Draw keypoints, inliers, outliers at video frame
         if args.show_keypoints:
             out_frame = cv2.drawKeypoints(out_frame, keypoints, 0, KEYPOINT_COLOR)
-            if len(outliers) > 0:
-                points = [ keypoints[m.trainIdx] for m in outliers ]
-                out_frame = cv2.drawKeypoints(out_frame, points, 0, OUTLIER_COLOR)
-            if len(inliers) > 0:
-                points = [ keypoints[m.trainIdx] for m in inliers ]
-                out_frame = cv2.drawKeypoints(out_frame, points, 0, INLIER_COLOR)
+        if args.show_outliers and len(outliers) > 0:
+            points = [ keypoints[m.trainIdx] for m in outliers ]
+            out_frame = cv2.drawKeypoints(out_frame, points, 0, OUTLIER_COLOR)
+        if args.show_inliers and len(inliers) > 0:
+            points = [ keypoints[m.trainIdx] for m in inliers ]
+            out_frame = cv2.drawKeypoints(out_frame, points, 0, INLIER_COLOR)
 
         # Draw keypoints, inliers, outliers at object
-        if args.show_object_keypoints:
+        if args.show_keypoints:
             object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, KEYPOINT_COLOR)
-            if len(outliers) > 0:
-                points = [ obj.keypoints[m.queryIdx] for m in outliers ]
-                object_image = cv2.drawKeypoints(object_image, points, 0, OUTLIER_COLOR)
-            if len(inliers) > 0:
-                points = [ obj.keypoints[m.queryIdx] for m in inliers ]
-                object_image = cv2.drawKeypoints(object_image, points, 0, INLIER_COLOR)
+        if args.show_outliers and len(outliers) > 0:
+            points = [ obj.keypoints[m.queryIdx] for m in outliers ]
+            object_image = cv2.drawKeypoints(object_image, points, 0, OUTLIER_COLOR)
+        if args.show_inliers and len(inliers) > 0:
+            points = [ obj.keypoints[m.queryIdx] for m in inliers ]
+            object_image = cv2.drawKeypoints(object_image, points, 0, INLIER_COLOR)
 
         # Draw bounding box
         if h is not None:
             out_frame = draw_bounding_box(out_frame, h, obj.w, obj.h, BOUNDING_BOX_COLOR, BOUNDING_BOX_THICKNESS)
+
+        # Show matches over keypoints (if enabled)
+        if args.show_matches:
+            matches_image = cv2.drawMatches(object_image, obj.keypoints, out_frame, keypoints, [], None,
+                KEYPOINT_COLOR, KEYPOINT_COLOR)
+            if args.show_outliers:
+                matches_image = cv2.drawMatches(object_image, obj.keypoints, out_frame, keypoints, outliers, matches_image,
+                    OUTLIER_COLOR, OUTLIER_COLOR, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS | cv2.DrawMatchesFlags_DRAW_OVER_OUTIMG)
+            if args.show_inliers:
+                matches_image = cv2.drawMatches(object_image, obj.keypoints, out_frame, keypoints, inliers, matches_image,
+                    INLIER_COLOR, INLIER_COLOR, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS | cv2.DrawMatchesFlags_DRAW_OVER_OUTIMG)
+            cv2.imshow('Matches', matches_image)
 
         # Draw info text at video frame
         video_text  = f"Frame {frame_idx}\n"
