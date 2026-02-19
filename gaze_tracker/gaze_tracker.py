@@ -9,11 +9,13 @@ from functools import reduce
 import time
 import csv
 import sys
+import math
 
 DEFAULT_VIDEO_SCALE = 1.2
 DEFAULT_UNDISTORT_ALPHA = 0.5
 DEFAULT_LOWE_FILTER_RATIO = 0.8
-DEFAULT_MIN_MATCHES = 20
+DEFAULT_MIN_MATCHES = 10
+DEFAULT_STE_THRESHOLD = 20
 
 DEFAULT_ROBUST_METHOD = cv2.RANSAC
 DEFAULT_ROBUST_THRESHOLD = 5
@@ -45,12 +47,45 @@ def lowe_filter(matches, ratio):
             result.append(m)
     return result
 
+def rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, return_sum_ste = False):
+    '''RMS of symmetric transfer error
+       $$STE_i = |x_i' - H x_i|^2 + |x - H^{-1} x_i'|^2$$
+       $$RMS\ STE = \sqrt{\frac{1}{N} \sum_{i=1}^{N} STE_i}$$
+    '''
 
-def find_homography(object_keypoints, frame_keypoints, matches, min_matches, robust_method, threshold):
+    n = len(inliers)
+    src_pts = np.float32([ src_keypoints[m.queryIdx].pt for m in inliers ]).reshape(-1,1,2)
+    dst_pts = np.float32([ dst_keypoints[m.trainIdx].pt for m in inliers ]).reshape(-1,1,2)
+
+    src_proj = cv2.perspectiveTransform(src_pts, h)
+    dst_proj = cv2.perspectiveTransform(dst_pts, h_inv)
+
+    def distance(p1, p2):
+        return (p1[0][0] - p2[0][0])**2 + (p1[0][1] - p2[0][1])**2
+
+    sum_ste = 0
+    for i in range(n):
+        sum_ste += distance(src_pts[i], dst_proj[i]) + distance(dst_pts[i], src_proj[i])
+
+    rms = math.sqrt(sum_ste / n)
+    if return_sum_ste:
+        return rms, sum_ste
+    else:
+        return rms
+
+
+def find_homography(src_keypoints, dst_keypoints, matches, min_matches, ste_threshold, robust_method, robust_threshold):
     # Find homography
-    src_pts = np.float32([ object_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
-    dst_pts = np.float32([ frame_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
-    h, mask = cv2.findHomography(src_pts, dst_pts, robust_method, threshold)
+    src_pts = np.float32([ src_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
+    dst_pts = np.float32([ dst_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
+    h, mask = cv2.findHomography(src_pts, dst_pts, robust_method, robust_threshold)
+
+    h_inv = None
+    try:
+        h_inv = np.linalg.inv(h)
+    except np.linalg.LinAlgError:
+        # Homography is singular
+        h = None
 
     # Find inliers, outliers, check minimum number of matches
     if h is not None:
@@ -58,12 +93,134 @@ def find_homography(object_keypoints, frame_keypoints, matches, min_matches, rob
         inliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 1]
         outliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 0]
         if len(inliers) >= min_matches:
-            return h, inliers, outliers
+            rms_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers)
+            if rms_ste < ste_threshold:
+                return h, h_inv, inliers, outliers
 
     # No solution, all matches are outliers
-    return None, [], matches
+    return None, None, [], matches
 
 
+class QualityStat:
+    def __init__(self, log_filename = None):
+        self.stat = []
+        self.log_filename = log_filename
+        if log_filename is not None:
+            self.csvfile = open(log_filename, 'w', newline='', encoding='utf-8')
+            self.fieldnames = [
+                'frame', 'src_keypoints', 'dst_keypoints',
+                'inliers', 'outliers', 'matches', 'inlier_ratio',
+                'mean_inlier_distance', 'mean_outlier_distance', 'mean_match_distance',
+                'sum_inlier_distance', 'sum_outlier_distance', 'sum_match_distance', 
+                'rms_ste', 'sum_ste' ]
+            self.writer = csv.DictWriter(self.csvfile, fieldnames=self.fieldnames)
+            self.writer.writeheader()
+
+    def close(self):
+        self.csvfile.write(self.totals_text())
+        self.csvfile.close()
+
+    def add(self, frame_num, h, h_inv, src_keypoints, dst_keypoints, inliers, outliers):
+        n_inliers = len(inliers)
+        n_outliers = len(outliers)
+        n_matches = n_inliers + n_outliers
+
+        rms_ste, sum_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, True)
+
+        sum_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0)
+        sum_outlier_distance = reduce(lambda x, y: x + y.distance, outliers, 0)
+        sum_match_distance = sum_inlier_distance + sum_outlier_distance
+
+        entry = dict(
+            frame = frame_num,
+            src_keypoints = len(src_keypoints),
+            dst_keypoints = len(dst_keypoints),
+
+            inliers = n_inliers,
+            outliers = n_outliers,
+            matches = n_matches,
+            inlier_ratio = n_inliers / n_matches if n_matches else 0,
+
+            mean_inlier_distance = sum_inlier_distance / n_inliers if n_inliers else 0,
+            mean_outlier_distance = sum_outlier_distance / n_outliers if n_outliers else 0,
+            mean_match_distance = sum_match_distance / n_matches if n_matches else 0,
+
+            sum_inlier_distance = sum_inlier_distance,
+            sum_outlier_distance = sum_outlier_distance,
+            sum_match_distance = sum_match_distance,
+
+            rms_ste = rms_ste,
+            sum_ste = sum_ste
+        )
+        self.stat.append(entry)
+        if self.log_filename is not None:
+            self.writer.writerow(entry)
+
+    @staticmethod
+    def stat_text(stat):
+        text  = f"Frame {stat['frame']}\n"
+        text += f"Keypoints (green): {stat['dst_keypoints']}\n"
+        text += f"Matches: {stat['matches']}\n"
+        text += f"* Inliers (red): {stat['inliers']}\n"
+        text += f"* Outliers (blue): {stat['outliers']}\n"
+        text += f"Inlier ratio: {stat['inlier_ratio'] * 100:.1f}%\n"
+        text += f"Mean match distance: {stat['mean_match_distance']:.1f}\n"
+        text += f"* Mean inlier distance: {stat['mean_inlier_distance']:.1f}\n"
+        text += f"* Mean outlier distance: {stat['mean_outlier_distance']:.1f}\n"
+        text += f"RMS STE: {stat['rms_ste']:.2f}\n"
+        return text
+
+    def get_last_stat(self):
+        if not len(self.stat):
+            return None
+        return self.stat[-1]
+
+    def last_stat_text(self):
+        if not len(self.stat):
+            return None
+        return self.stat_text(self.get_last_stat())
+
+    def get_totals(self):
+        if not len(self.stat):
+            return None
+
+        n = len(self.stat)
+        num_inliers = reduce(lambda x, y: x + y['inliers'], self.stat, 0)
+        num_outliers = reduce(lambda x, y: x + y['outliers'], self.stat, 0)
+        num_matches = reduce(lambda x, y: x + y['matches'], self.stat, 0)
+        rms_ste = math.sqrt(reduce(lambda x, y: x + y['sum_ste'], self.stat, 0) / num_inliers) if num_inliers else 0
+
+        result = {}
+        result['frames'] = n
+        result['mean_keypoints'] = reduce(lambda x, y: x + y['dst_keypoints'], self.stat, 0) / n
+        result['mean_matches'] = num_matches / n
+        result['mean_inliers'] = num_inliers / n
+        result['mean_outliers'] = num_outliers / n
+        result['mean_inlier_ratio'] = num_inliers / num_matches if num_matches else 0
+        result['mean_match_distance'] = reduce(lambda x, y: x + y['sum_match_distance'], self.stat, 0) / num_matches if num_matches else 0
+        result['mean_inlier_distance'] = reduce(lambda x, y: x + y['sum_inlier_distance'], self.stat, 0) / num_inliers if num_inliers else 0
+        result['mean_outlier_distance'] = reduce(lambda x, y: x + y['sum_outlier_distance'], self.stat, 0) / num_outliers if num_outliers else 0
+        result['rms_ste'] = rms_ste
+        return result
+
+    def totals_text(self):
+        if not len(self.stat):
+            return None
+
+        totals = self.get_totals()
+        text  = f"Frames processed: {totals['frames']}\n"
+        text += f"Mean keypoints: {int(totals['mean_keypoints'])}\n"
+        text += f"Mean matches: {int(totals['mean_matches'])}\n"
+        text += f"* Mean inliers: {int(totals['mean_inliers'])}\n"
+        text += f"* Mean outliers: {int(totals['mean_outliers'])}\n"
+        text += f"Mean inlier ratio: {totals['mean_inlier_ratio'] * 100:.1f}%\n"
+        text += f"Mean match distance: {totals['mean_match_distance']:.1f}\n"
+        text += f"* Mean inlier distance: {totals['mean_inlier_distance']:.1f}\n"
+        text += f"* Mean outlier distance: {totals['mean_outlier_distance']:.1f}\n"
+        text += f"RMS STE: {totals['rms_ste']:.2f}\n"
+        return text
+
+                                      
 def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_width):
     rect = np.float32([ [0, 0], [0, object_h], [object_w, object_h], [object_w, 0] ]).reshape(-1,1,2)
     rect = cv2.perspectiveTransform(rect, homography)
@@ -261,21 +418,23 @@ def main():
     parser.add_argument('video_out', help='Output video file.')
     parser.add_argument('data_out',  help='Output CSV file.')
 
-    parser.add_argument('--start_frame', required=False, default=None, type=int,
+    parser.add_argument('--start_frame', default=None, type=int,
         help='The first frame to process.')
-    parser.add_argument('--end_frame', required=False, default=None, type=int,
+    parser.add_argument('--end_frame', default=None, type=int,
         help='The last frame to process.')
 
-    parser.add_argument('--video_scale', required=False, default=DEFAULT_VIDEO_SCALE, type=float,
+    parser.add_argument('--video_scale', default=DEFAULT_VIDEO_SCALE, type=float,
         help=f'Scale factor for the resolution of the output video. Default is {DEFAULT_VIDEO_SCALE}.')
-    parser.add_argument('--undistort_alpha', required=False, default=DEFAULT_UNDISTORT_ALPHA, type=float,
+    parser.add_argument('--undistort_alpha', default=DEFAULT_UNDISTORT_ALPHA, type=float,
         help=f'Undistortion scaling parameter. 0: all the pixels in the undistorted image are valid; 1: all the source image pixels are retained in the undistorted image. Default is {DEFAULT_UNDISTORT_ALPHA}.')
-    parser.add_argument('--lowe_filter_ratio', required=False, default=DEFAULT_LOWE_FILTER_RATIO, type=float,
+    parser.add_argument('--lowe_filter_ratio', default=DEFAULT_LOWE_FILTER_RATIO, type=float,
         help=f'Lowe filter ratio. 0: filter out all matches; 1: no filtering. Default is {DEFAULT_LOWE_FILTER_RATIO}.')
-    parser.add_argument('--min_matches', required=False, default=DEFAULT_MIN_MATCHES, type=int,
+    parser.add_argument('--min_matches', default=DEFAULT_MIN_MATCHES, type=int,
         help=f'Minimum number of matches for homography estimation. Default is {DEFAULT_MIN_MATCHES}.')
+    parser.add_argument('--ste_threshold', default=DEFAULT_STE_THRESHOLD, type=float,
+        help=f'Maximum symmetric transfer error in pixels. Default is {DEFAULT_STE_THRESHOLD}.')
 
-    parser.add_argument('--robust_threshold', required=False, default=DEFAULT_ROBUST_THRESHOLD, type=float,
+    parser.add_argument('--robust_threshold', default=DEFAULT_ROBUST_THRESHOLD, type=float,
         help=f'Threshold used in RANSAC/RHO robust method. Default is {DEFAULT_ROBUST_THRESHOLD}')
     robust_method_group = parser.add_mutually_exclusive_group()
     robust_method_group.add_argument('--ransac', action='store_const', dest='robust_method', const=cv2.RANSAC,
@@ -285,11 +444,13 @@ def main():
     robust_method_group.add_argument('--lemeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
         help='Use the LMedS algorithm for outlier detection. This is the default algorithm.')
 
-    parser.add_argument('--sift_contrast_threshold', required=False, default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
+    parser.add_argument('--sift_contrast_threshold', default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
         help=f'SIFT detector contrast threshold. Higher values produce fewer features. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
-    parser.add_argument('--sift_edge_threshold', required=False, default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
+    parser.add_argument('--sift_edge_threshold', default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
         help=f'SIFT detector edge threshold. Higher values retain more features. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
+    parser.add_argument('--log', default=None, help='Tracking quality log file name.')
+
     parser.add_argument('--show_inliers', action='store_true', help='Show inlier keypoints.')
     parser.add_argument('--show_outliers', action='store_true', help='Show outlier keypoints.')
     parser.add_argument('--show_keypoints', action='store_true', help='Show all keypoints, including unmatched.')
@@ -329,6 +490,9 @@ def main():
 
     # Gaze data
     gaze_data = GazeData(gaze_filename, timestamps_filename)
+
+    # Quality statistics & logging
+    quality_stat = QualityStat(args.log)
 
     # Detector and matcher
     detector = cv2.SIFT_create(contrastThreshold=args.sift_contrast_threshold, edgeThreshold=args.sift_edge_threshold)
@@ -376,15 +540,12 @@ def main():
         if len(keypoints) > 0:
             matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
             filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
-            if len(filtered_matches):
-                mean_match_distance = reduce(lambda x, y: x + y.distance, filtered_matches, 0) / len(filtered_matches)
 
         # Homography
         if len(filtered_matches) > args.min_matches:
-            h, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.robust_method, args.robust_threshold)
+            h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, args.robust_method, args.robust_threshold)
             if h is not None:
-                h_inv = np.linalg.pinv(h)
-                mean_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0) / len(inliers)
+                quality_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
 
         # Project gaze points to object plane
         gaze = gaze_data.gaze_for_frame(frame_idx)
@@ -442,14 +603,9 @@ def main():
             cv2.imshow('Matches', matches_image)
 
         # Draw info text at video frame
-        video_text  = f"Frame {frame_idx}\n"
-        video_text += f"Keypoints (green): {len(keypoints)}\n"
-        video_text += f"Matches: {len(filtered_matches)}\n"
-        video_text += f"* Inliers (red): {len(inliers)}\n"
-        video_text += f"* Outliers (blue): {len(outliers)}\n"
-        video_text += f"Mean match distance: {mean_match_distance:.1f}\n"
-        video_text += f"Mean inlier distance: {mean_inlier_distance:.1f}\n"
-        draw_text(out_frame, video_text, 16, 30)
+        frame_stat_text = quality_stat.last_stat_text() or ""
+        totals_text = quality_stat.totals_text() or ""
+        draw_text(out_frame, frame_stat_text + "\n" + totals_text, 16, 30)
 
         video_out.write(out_frame)
 
@@ -465,6 +621,8 @@ def main():
         if should_stop:
             break
 
+    print(f"\n\nStatistics:\n{quality_stat.totals_text()}")
+    quality_stat.close()
     data_writer.close()
     video_out.release()
     cv2.destroyAllWindows()
