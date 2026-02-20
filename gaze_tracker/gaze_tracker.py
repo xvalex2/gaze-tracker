@@ -40,6 +40,14 @@ TEXT_THICKNESS = 1
 TEXT_LINE_SPACING = 1.5
 
 
+def sum_squares(a):
+    return np.dot(a, a)
+
+
+def stddev(sum_squares, n):
+    return math.sqrt(sum_squares / n)
+
+
 def lowe_filter(matches, ratio):
     result = []
     for m, n in matches:
@@ -47,11 +55,9 @@ def lowe_filter(matches, ratio):
             result.append(m)
     return result
 
+
 def rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, return_sum_ste = False):
-    '''RMS of symmetric transfer error
-       $$STE_i = |x_i' - H x_i|^2 + |x - H^{-1} x_i'|^2$$
-       $$RMS\ STE = \sqrt{\frac{1}{N} \sum_{i=1}^{N} STE_i}$$
-    '''
+    '''RMS of symmetric transfer error'''
 
     n = len(inliers)
     src_pts = np.float32([ src_keypoints[m.queryIdx].pt for m in inliers ]).reshape(-1,1,2)
@@ -108,10 +114,12 @@ class QualityStat:
         if log_filename is not None:
             self.csvfile = open(log_filename, 'w', newline='', encoding='utf-8')
             self.fieldnames = [
-                'frame', 'src_keypoints', 'dst_keypoints',
+                'frame', 'src_keypoints', 'dst_keypoints', 'detected',
                 'inliers', 'outliers', 'matches', 'inlier_ratio',
                 'mean_inlier_distance', 'mean_outlier_distance', 'mean_match_distance',
+                'stddev_inlier_distance', 'stddev_outlier_distance', 'stddev_match_distance',
                 'sum_inlier_distance', 'sum_outlier_distance', 'sum_match_distance', 
+                'ss_inlier_distance', 'ss_outlier_distance', 'ss_match_distance', 
                 'rms_ste', 'sum_ste' ]
             self.writer = csv.DictWriter(self.csvfile, fieldnames=self.fieldnames)
             self.writer.writeheader()
@@ -125,16 +133,24 @@ class QualityStat:
         n_outliers = len(outliers)
         n_matches = n_inliers + n_outliers
 
-        rms_ste, sum_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, True)
+        rms_ste, sum_ste = 0, 0
+        if h is not None:
+            rms_ste, sum_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, True)
 
-        sum_inlier_distance = reduce(lambda x, y: x + y.distance, inliers, 0)
-        sum_outlier_distance = reduce(lambda x, y: x + y.distance, outliers, 0)
+        sum_inlier_distance = np.sum([m.distance for m in inliers])
+        sum_outlier_distance = np.sum([m.distance for m in outliers])
         sum_match_distance = sum_inlier_distance + sum_outlier_distance
+
+        ss_inlier_distance = sum_squares([m.distance for m in inliers])
+        ss_outlier_distance = sum_squares([m.distance for m in outliers])
+        ss_match_distance = ss_inlier_distance + ss_outlier_distance
 
         entry = dict(
             frame = frame_num,
             src_keypoints = len(src_keypoints),
             dst_keypoints = len(dst_keypoints),
+
+            detected = h is not None,
 
             inliers = n_inliers,
             outliers = n_outliers,
@@ -145,9 +161,17 @@ class QualityStat:
             mean_outlier_distance = sum_outlier_distance / n_outliers if n_outliers else 0,
             mean_match_distance = sum_match_distance / n_matches if n_matches else 0,
 
+            stddev_inlier_distance = stddev(ss_inlier_distance, n_inliers) if n_inliers else 0,
+            stddev_outlier_distance = stddev(ss_outlier_distance, n_outliers) if n_outliers else 0,
+            stddev_match_distance = stddev(ss_match_distance, n_matches) if n_matches else 0,
+
             sum_inlier_distance = sum_inlier_distance,
             sum_outlier_distance = sum_outlier_distance,
             sum_match_distance = sum_match_distance,
+
+            ss_inlier_distance = ss_inlier_distance,
+            ss_outlier_distance = ss_outlier_distance,
+            ss_match_distance = ss_match_distance,
 
             rms_ste = rms_ste,
             sum_ste = sum_ste
@@ -158,15 +182,15 @@ class QualityStat:
 
     @staticmethod
     def stat_text(stat):
-        text  = f"Frame {stat['frame']}\n"
+        text  = f"Frame {stat['frame']} {"(*)" if stat['detected'] else ""}\n"
         text += f"Keypoints (green): {stat['dst_keypoints']}\n"
         text += f"Matches: {stat['matches']}\n"
         text += f"* Inliers (red): {stat['inliers']}\n"
         text += f"* Outliers (blue): {stat['outliers']}\n"
         text += f"Inlier ratio: {stat['inlier_ratio'] * 100:.1f}%\n"
-        text += f"Mean match distance: {stat['mean_match_distance']:.1f}\n"
-        text += f"* Mean inlier distance: {stat['mean_inlier_distance']:.1f}\n"
-        text += f"* Mean outlier distance: {stat['mean_outlier_distance']:.1f}\n"
+        text += f"Match distance: {stat['mean_match_distance']:.1f} stddev {stat['stddev_match_distance']:.1f}\n"
+        text += f"* Inlier distance: {stat['mean_inlier_distance']:.1f} stddev {stat['stddev_inlier_distance']:.1f}\n"
+        text += f"* Outlier distance: {stat['mean_outlier_distance']:.1f} stddev {stat['stddev_outlier_distance']:.1f}\n"
         text += f"RMS STE: {stat['rms_ste']:.2f}\n"
         return text
 
@@ -181,43 +205,49 @@ class QualityStat:
         return self.stat_text(self.get_last_stat())
 
     def get_totals(self):
-        if not len(self.stat):
+        stat = [e for e in self.stat if e['detected']]
+        if not len(stat):
             return None
 
-        n = len(self.stat)
-        num_inliers = reduce(lambda x, y: x + y['inliers'], self.stat, 0)
-        num_outliers = reduce(lambda x, y: x + y['outliers'], self.stat, 0)
-        num_matches = reduce(lambda x, y: x + y['matches'], self.stat, 0)
-        rms_ste = math.sqrt(reduce(lambda x, y: x + y['sum_ste'], self.stat, 0) / num_inliers) if num_inliers else 0
+        n = len(stat)
+        num_inliers = np.sum([e['inliers'] for e in stat])
+        num_outliers = np.sum([e['outliers'] for e in stat])
+        num_matches = np.sum([e['matches'] for e in stat])
+        rms_ste = stddev(np.sum([e['sum_ste'] for e in stat]), num_inliers) if num_inliers else 0
 
         result = {}
         result['frames'] = n
-        result['mean_keypoints'] = reduce(lambda x, y: x + y['dst_keypoints'], self.stat, 0) / n
+        result['mean_keypoints'] = np.mean([e['dst_keypoints'] for e in stat])
         result['mean_matches'] = num_matches / n
         result['mean_inliers'] = num_inliers / n
         result['mean_outliers'] = num_outliers / n
         result['mean_inlier_ratio'] = num_inliers / num_matches if num_matches else 0
-        result['mean_match_distance'] = reduce(lambda x, y: x + y['sum_match_distance'], self.stat, 0) / num_matches if num_matches else 0
-        result['mean_inlier_distance'] = reduce(lambda x, y: x + y['sum_inlier_distance'], self.stat, 0) / num_inliers if num_inliers else 0
-        result['mean_outlier_distance'] = reduce(lambda x, y: x + y['sum_outlier_distance'], self.stat, 0) / num_outliers if num_outliers else 0
+        result['mean_match_distance'] = np.sum([e['sum_match_distance'] for e in stat]) / num_matches if num_matches else 0
+        result['mean_inlier_distance'] = np.sum([e['sum_inlier_distance'] for e in stat]) / num_inliers if num_inliers else 0
+        result['mean_outlier_distance'] = np.sum([e['sum_outlier_distance'] for e in stat]) / num_outliers if num_outliers else 0
+        result['stddev_match_distance'] = stddev(np.sum([e['ss_match_distance'] for e in stat]), num_matches) if num_matches else 0
+        result['stddev_inlier_distance'] = stddev(np.sum([e['ss_inlier_distance'] for e in stat]), num_inliers) if num_inliers else 0
+        result['stddev_outlier_distance'] = stddev(np.sum([e['ss_outlier_distance'] for e in stat]), num_outliers) if num_outliers else 0
         result['rms_ste'] = rms_ste
+        result['rms_ste_99p'] = np.percentile([e['rms_ste'] for e in stat], 99)
         return result
 
     def totals_text(self):
-        if not len(self.stat):
+        totals = self.get_totals()
+        if totals is None:
             return None
 
-        totals = self.get_totals()
-        text  = f"Frames processed: {totals['frames']}\n"
+        text  = f"Frames with object detection: {totals['frames']}\n"
         text += f"Mean keypoints: {int(totals['mean_keypoints'])}\n"
         text += f"Mean matches: {int(totals['mean_matches'])}\n"
         text += f"* Mean inliers: {int(totals['mean_inliers'])}\n"
         text += f"* Mean outliers: {int(totals['mean_outliers'])}\n"
         text += f"Mean inlier ratio: {totals['mean_inlier_ratio'] * 100:.1f}%\n"
-        text += f"Mean match distance: {totals['mean_match_distance']:.1f}\n"
-        text += f"* Mean inlier distance: {totals['mean_inlier_distance']:.1f}\n"
-        text += f"* Mean outlier distance: {totals['mean_outlier_distance']:.1f}\n"
-        text += f"RMS STE: {totals['rms_ste']:.2f}\n"
+        text += f"Match distance: {totals['mean_match_distance']:.1f} stddev {totals['stddev_match_distance']:.1f}\n"
+        text += f"* Inlier distance: {totals['mean_inlier_distance']:.1f} stddev {totals['stddev_inlier_distance']:.1f}\n"
+        text += f"* Outlier distance: {totals['mean_outlier_distance']:.1f} stddev {totals['stddev_outlier_distance']:.1f}\n"
+        text += f"RMS STE: {totals['rms_ste']:.2f} 99th percentile: {totals['rms_ste_99p']:.2f}\n"
+        text += f"\n"
         return text
 
                                       
@@ -544,8 +574,8 @@ def main():
         # Homography
         if len(filtered_matches) > args.min_matches:
             h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, args.robust_method, args.robust_threshold)
-            if h is not None:
-                quality_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
+
+        quality_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
 
         # Project gaze points to object plane
         gaze = gaze_data.gaze_for_frame(frame_idx)
