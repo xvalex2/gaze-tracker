@@ -5,7 +5,6 @@ import msgpack
 from os.path import join
 from os.path import isfile
 from typing import NamedTuple
-from functools import reduce
 import time
 import csv
 import sys
@@ -45,7 +44,11 @@ def sum_squares(a):
 
 
 def stddev(sum_squares, n):
-    return math.sqrt(sum_squares / n)
+    return math.sqrt(sum_squares / n) if n else 0
+
+
+def div(a, b):
+    return a / b if b else 0
 
 
 def lowe_filter(matches, ratio):
@@ -155,15 +158,15 @@ class QualityStat:
             inliers = n_inliers,
             outliers = n_outliers,
             matches = n_matches,
-            inlier_ratio = n_inliers / n_matches if n_matches else 0,
+            inlier_ratio = div(n_inliers, n_matches),
 
-            mean_inlier_distance = sum_inlier_distance / n_inliers if n_inliers else 0,
-            mean_outlier_distance = sum_outlier_distance / n_outliers if n_outliers else 0,
-            mean_match_distance = sum_match_distance / n_matches if n_matches else 0,
+            mean_inlier_distance = div(sum_inlier_distance, n_inliers),
+            mean_outlier_distance = div(sum_outlier_distance, n_outliers),
+            mean_match_distance = div(sum_match_distance, n_matches),
 
-            stddev_inlier_distance = stddev(ss_inlier_distance, n_inliers) if n_inliers else 0,
-            stddev_outlier_distance = stddev(ss_outlier_distance, n_outliers) if n_outliers else 0,
-            stddev_match_distance = stddev(ss_match_distance, n_matches) if n_matches else 0,
+            stddev_inlier_distance = stddev(ss_inlier_distance, n_inliers),
+            stddev_outlier_distance = stddev(ss_outlier_distance, n_outliers),
+            stddev_match_distance = stddev(ss_match_distance, n_matches),
 
             sum_inlier_distance = sum_inlier_distance,
             sum_outlier_distance = sum_outlier_distance,
@@ -213,7 +216,7 @@ class QualityStat:
         num_inliers = np.sum([e['inliers'] for e in stat])
         num_outliers = np.sum([e['outliers'] for e in stat])
         num_matches = np.sum([e['matches'] for e in stat])
-        rms_ste = stddev(np.sum([e['sum_ste'] for e in stat]), num_inliers) if num_inliers else 0
+        rms_ste = stddev(np.sum([e['sum_ste'] for e in stat]), num_inliers)
 
         result = {}
         result['frames'] = n
@@ -221,13 +224,13 @@ class QualityStat:
         result['mean_matches'] = num_matches / n
         result['mean_inliers'] = num_inliers / n
         result['mean_outliers'] = num_outliers / n
-        result['mean_inlier_ratio'] = num_inliers / num_matches if num_matches else 0
-        result['mean_match_distance'] = np.sum([e['sum_match_distance'] for e in stat]) / num_matches if num_matches else 0
-        result['mean_inlier_distance'] = np.sum([e['sum_inlier_distance'] for e in stat]) / num_inliers if num_inliers else 0
-        result['mean_outlier_distance'] = np.sum([e['sum_outlier_distance'] for e in stat]) / num_outliers if num_outliers else 0
-        result['stddev_match_distance'] = stddev(np.sum([e['ss_match_distance'] for e in stat]), num_matches) if num_matches else 0
-        result['stddev_inlier_distance'] = stddev(np.sum([e['ss_inlier_distance'] for e in stat]), num_inliers) if num_inliers else 0
-        result['stddev_outlier_distance'] = stddev(np.sum([e['ss_outlier_distance'] for e in stat]), num_outliers) if num_outliers else 0
+        result['mean_inlier_ratio'] = div(num_inliers, num_matches)
+        result['mean_match_distance'] = div(np.sum([e['sum_match_distance'] for e in stat]), num_matches)
+        result['mean_inlier_distance'] = div(np.sum([e['sum_inlier_distance'] for e in stat]), num_inliers)
+        result['mean_outlier_distance'] = div(np.sum([e['sum_outlier_distance'] for e in stat]), num_outliers)
+        result['stddev_match_distance'] = stddev(np.sum([e['ss_match_distance'] for e in stat]), num_matches)
+        result['stddev_inlier_distance'] = stddev(np.sum([e['ss_inlier_distance'] for e in stat]), num_inliers)
+        result['stddev_outlier_distance'] = stddev(np.sum([e['ss_outlier_distance'] for e in stat]), num_outliers)
         result['rms_ste'] = rms_ste
         result['rms_ste_99p'] = np.percentile([e['rms_ste'] for e in stat], 99)
         return result
