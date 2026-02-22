@@ -14,16 +14,17 @@ DEFAULT_VIDEO_SCALE = 1.2
 DEFAULT_UNDISTORT_ALPHA = 0.5
 DEFAULT_LOWE_FILTER_RATIO = 0.8
 DEFAULT_MIN_MATCHES = 20
-DEFAULT_STE_THRESHOLD = 20
+DEFAULT_STE_THRESHOLD = 50
 
-DEFAULT_ROBUST_METHOD = cv2.RANSAC
+DEFAULT_ROBUST_METHOD = cv2.LMEDS
 DEFAULT_ROBUST_THRESHOLD = 5
 
 DEFAULT_SIFT_CONTRAST_THRESHOLD = 0.04
 DEFAULT_SIFT_EDGE_THRESHOLD = 10.0
 
-GAZE_COLOR = (255, 0, 0)
+GAZE_COLOR = (255, 0, 255)
 GAZE_THICKNESS = 3
+GAZE_CROSS_SIZE = 20
 
 KEYPOINT_COLOR = (0, 255, 0)
 INLIER_COLOR = (0, 0, 255)
@@ -39,16 +40,20 @@ TEXT_THICKNESS = 1
 TEXT_LINE_SPACING = 1.5
 
 
-def sum_squares(a):
-    return np.dot(a, a)
-
-
 def stddev(sum_squares, n):
     return math.sqrt(sum_squares / n) if n else 0
 
 
 def div(a, b):
     return a / b if b else 0
+
+
+def as_vectors(points):
+    return np.float32(points).reshape(-1,1,2)
+
+
+def as_points(array):
+    return np.float32(array).reshape(-1, 2)
 
 
 def lowe_filter(matches, ratio):
@@ -59,55 +64,101 @@ def lowe_filter(matches, ratio):
     return result
 
 
-def rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, return_sum_ste = False):
+def bounding_box_quad(points):
+    points = np.asarray(points)
+    xmin = np.min(points[:, 0])
+    xmax = np.max(points[:, 0])
+    ymin = np.min(points[:, 1])
+    ymax = np.max(points[:, 1])
+    return [
+        [xmin, ymin],
+        [xmax, ymin],
+        [xmax, ymax],
+        [xmin, ymax],
+    ]
+
+
+def is_convex_non_degenerate_quad(quad, fudge_factor = 0.1):
+    '''Check quadrilateral is convex and non-degenerate'''
+    # https://dsp.stackexchange.com/questions/1990/filtering-ransac-estimated-homographies
+
+    x1, y1, x2, y2, x3, y3, x4, y4 = quad.ravel()
+
+    dx1, dy1 = x3 - x1, y3 - y1
+    dx2, dy2 = x4 - x2, y4 - y2
+
+    delta = dx1 * dy2 - dy1 * dx2
+    if delta == 0:
+        return False
+
+    t = ((x2 - x1) * dy2 - (y2 - y1) * dx2) / delta
+    s = ((x2 - x1) * dy1 - (y2 - y1) * dx1) / delta
+
+    low, high = fudge_factor, 1 - fudge_factor
+    return (low <= t <= high) and (low <= s <= high)
+
+
+def rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, return_sum = False):
     '''RMS of symmetric transfer error'''
 
     n = len(inliers)
-    src_pts = np.float32([ src_keypoints[m.queryIdx].pt for m in inliers ]).reshape(-1,1,2)
-    dst_pts = np.float32([ dst_keypoints[m.trainIdx].pt for m in inliers ]).reshape(-1,1,2)
 
-    src_proj = cv2.perspectiveTransform(src_pts, h)
-    dst_proj = cv2.perspectiveTransform(dst_pts, h_inv)
+    src_pts = as_points([ src_keypoints[m.queryIdx].pt for m in inliers ])
+    dst_pts = as_points([ dst_keypoints[m.trainIdx].pt for m in inliers ])
 
-    def distance(p1, p2):
-        return (p1[0][0] - p2[0][0])**2 + (p1[0][1] - p2[0][1])**2
+    src_proj = as_points(cv2.perspectiveTransform(as_vectors(src_pts), h))
+    dst_proj = as_points(cv2.perspectiveTransform(as_vectors(dst_pts), h_inv))
 
-    sum_ste = 0
-    for i in range(n):
-        sum_ste += distance(src_pts[i], dst_proj[i]) + distance(dst_pts[i], src_proj[i])
+    src_diff = src_pts - dst_proj
+    dst_diff = dst_pts - src_proj
+    sum_errors = np.sum(src_diff**2) + np.sum(dst_diff**2)
 
-    rms = math.sqrt(sum_ste / n)
-    if return_sum_ste:
-        return rms, sum_ste
+    rms = math.sqrt(sum_errors / n)
+    if return_sum:
+        return rms, sum_errors
     else:
         return rms
 
 
 def find_homography(src_keypoints, dst_keypoints, matches, min_matches, ste_threshold, robust_method, robust_threshold):
     # Find homography
-    src_pts = np.float32([ src_keypoints[m.queryIdx].pt for m in matches ]).reshape(-1,1,2)
-    dst_pts = np.float32([ dst_keypoints[m.trainIdx].pt for m in matches ]).reshape(-1,1,2)
+    src_pts = as_vectors([ src_keypoints[m.queryIdx].pt for m in matches ])
+    dst_pts = as_vectors([ dst_keypoints[m.trainIdx].pt for m in matches ])
     h, mask = cv2.findHomography(src_pts, dst_pts, robust_method, robust_threshold)
+
+    no_result = None, None, [], matches
+    if h is None:
+        return no_result
 
     h_inv = None
     try:
         h_inv = np.linalg.inv(h)
     except np.linalg.LinAlgError:
         # Homography is singular
-        h = None
+        return no_result
 
-    # Find inliers, outliers, check minimum number of matches
-    if h is not None:
-        mask = mask.ravel()
-        inliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 1]
-        outliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 0]
-        if len(inliers) >= min_matches:
-            rms_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers)
-            if rms_ste < ste_threshold:
-                return h, h_inv, inliers, outliers
+    # Find inliers, outliers
+    mask = mask.ravel()
+    inliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 1]
+    outliers = [match for match, is_inlier in zip(matches, mask) if is_inlier == 0]
 
-    # No solution, all matches are outliers
-    return None, None, [], matches
+    # Minumum number of inliers check
+    if len(inliers) < min_matches:
+        return no_result
+
+    # Reprojection error check
+    inlier_pts = as_points([ src_keypoints[m.queryIdx].pt for m in inliers ])
+    rms_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers)
+    if rms_ste > ste_threshold:
+        return no_result
+
+    # Projection must retain convexity
+    quad = bounding_box_quad(inlier_pts)
+    quad_proj = cv2.perspectiveTransform(as_vectors(quad), h)
+    if not is_convex_non_degenerate_quad(quad_proj):
+        return no_result
+
+    return h, h_inv, inliers, outliers
 
 
 class QualityStat:
@@ -140,12 +191,15 @@ class QualityStat:
         if h is not None:
             rms_ste, sum_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, True)
 
-        sum_inlier_distance = np.sum([m.distance for m in inliers])
-        sum_outlier_distance = np.sum([m.distance for m in outliers])
+        inlier_distances = [m.distance for m in inliers]
+        outlier_distances = [m.distance for m in outliers]
+
+        sum_inlier_distance = np.sum(inlier_distances)
+        sum_outlier_distance = np.sum(outlier_distances)
         sum_match_distance = sum_inlier_distance + sum_outlier_distance
 
-        ss_inlier_distance = sum_squares([m.distance for m in inliers])
-        ss_outlier_distance = sum_squares([m.distance for m in outliers])
+        ss_inlier_distance = np.dot(inlier_distances, inlier_distances)
+        ss_outlier_distance = np.dot(outlier_distances, outlier_distances)
         ss_match_distance = ss_inlier_distance + ss_outlier_distance
 
         entry = dict(
@@ -254,12 +308,6 @@ class QualityStat:
         return text
 
                                       
-def draw_bounding_box(frame, homography, object_w, object_h, line_color, line_width):
-    rect = np.float32([ [0, 0], [0, object_h], [object_w, object_h], [object_w, 0] ]).reshape(-1,1,2)
-    rect = cv2.perspectiveTransform(rect, homography)
-    return cv2.polylines(frame, [np.int32(rect)], True, line_color, line_width, cv2.LINE_AA)
-
-
 def draw_text(image, text, x, y):
     text_size, _ = cv2.getTextSize(text, TEXT_FONT, TEXT_SCALE, TEXT_THICKNESS)
     line_height = int(text_size[1] * TEXT_LINE_SPACING)
@@ -474,7 +522,7 @@ def main():
         help='Use the RANSAC algorithm for outlier detection.')
     robust_method_group.add_argument('--rho', action='store_const', dest='robust_method', const=cv2.RHO,
         help='Use the RHO algorithm for outlier detection.')
-    robust_method_group.add_argument('--lemeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
+    robust_method_group.add_argument('--lmeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
         help='Use the LMedS algorithm for outlier detection. This is the default algorithm.')
 
     parser.add_argument('--sift_contrast_threshold', default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
@@ -559,12 +607,11 @@ def main():
         inliers, outliers = [], []
         keypoints, descriptors = [], []
         matches, filtered_matches = [], []
-        mean_match_distance = 0
-        mean_inlier_distance = 0
         object_image = obj.image.copy()
 
         # Undistort
         out_frame = undistorter.undistort_image(frame)
+        out_h, out_w, _ = out_frame.shape
 
         # Find keypoints
         keypoints, descriptors = detector.detectAndCompute(out_frame, None)
@@ -584,7 +631,7 @@ def main():
         gaze = gaze_data.gaze_for_frame(frame_idx)
         if h is not None and len(gaze) > 0:
             gaze_points = [ [ g['norm_pos_x'] * video_props.width, (1 - g['norm_pos_y']) * video_props.height ] for g in gaze ]
-            gaze_points = np.float32(gaze_points).reshape(-1,1,2)
+            gaze_points = as_vectors(gaze_points)
             gaze_points_undistorted = undistorter.undistort_points(gaze_points)
             object_points = cv2.perspectiveTransform(gaze_points_undistorted, h_inv)
             for i in range(0, len(gaze)):
@@ -595,9 +642,18 @@ def main():
             data_writer.write(gaze)
 
             # Draw gaze
-            out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, GAZE_COLOR, GAZE_THICKNESS, cv2.LINE_AA)
+            if len(gaze_points_undistorted):
+                out_frame = cv2.polylines(out_frame, [np.int32(gaze_points_undistorted)], False, GAZE_COLOR, GAZE_THICKNESS, cv2.LINE_AA)
+                x, y = gaze_points_undistorted[-1][0]
+                d = GAZE_CROSS_SIZE
+                cross = [ as_vectors([[x-d, y], [x+d, y]]), as_vectors([[x, y-d], [x, y+d]]) ]
+                cv2.polylines(out_frame, np.int32(cross), False, GAZE_COLOR, 1, cv2.LINE_AA)
             if args.show_object:
                 cv2.polylines(object_image, [np.int32(object_points)], False, GAZE_COLOR, GAZE_THICKNESS, cv2.LINE_AA)
+                x, y = object_points[-1][0]
+                d = GAZE_CROSS_SIZE
+                cross = [ as_vectors([[x-d, y], [x+d, y]]), as_vectors([[x, y-d], [x, y+d]]) ]
+                cv2.polylines(object_image, np.int32(cross), False, GAZE_COLOR, 1, cv2.LINE_AA)
 
         # Draw keypoints, inliers, outliers at video frame
         if args.show_keypoints:
@@ -610,7 +666,7 @@ def main():
             out_frame = cv2.drawKeypoints(out_frame, points, 0, INLIER_COLOR)
 
         # Draw keypoints, inliers, outliers at object
-        if args.show_keypoints:
+        if args.show_object and args.show_keypoints:
             object_image = cv2.drawKeypoints(object_image, obj.keypoints, 0, KEYPOINT_COLOR)
         if args.show_outliers and len(outliers) > 0:
             points = [ obj.keypoints[m.queryIdx] for m in outliers ]
@@ -619,9 +675,37 @@ def main():
             points = [ obj.keypoints[m.queryIdx] for m in inliers ]
             object_image = cv2.drawKeypoints(object_image, points, 0, INLIER_COLOR)
 
-        # Draw bounding box
+        # Draw bounding box at video frame
         if h is not None:
-            out_frame = draw_bounding_box(out_frame, h, obj.w, obj.h, BOUNDING_BOX_COLOR, BOUNDING_BOX_THICKNESS)
+            # Bounding box around object
+            rect = as_vectors([ [0, 0], [obj.w, 0], [obj.w, obj.h], [0, obj.h] ])
+            rect = cv2.perspectiveTransform(rect, h)
+            if is_convex_non_degenerate_quad(rect):
+                rect = [np.int32(np.round(rect))]
+                out_frame = cv2.polylines(out_frame, rect, True, BOUNDING_BOX_COLOR, BOUNDING_BOX_THICKNESS, cv2.LINE_AA)
+            else:
+                # Bounding box around inliers
+                inlier_points = as_points([ obj.keypoints[m.queryIdx].pt for m in inliers ])
+                rect = as_vectors(bounding_box_quad(inlier_points))
+                rect = cv2.perspectiveTransform(rect, h)
+                rect = [np.int32(np.round(rect))]
+                out_frame = cv2.polylines(out_frame, rect, True, BOUNDING_BOX_COLOR, 1, cv2.LINE_AA)
+
+        # Draw bounding box at object plane
+        if args.show_object and h is not None:
+            # Bounding box around object
+            rect = as_vectors([ [0, 0], [out_w, 0], [out_w, out_h], [0, out_h] ])
+            rect = cv2.perspectiveTransform(rect, h_inv)
+            if is_convex_non_degenerate_quad(rect):
+                rect = [np.int32(np.round(rect))]
+                object_image = cv2.polylines(object_image, rect, True, BOUNDING_BOX_COLOR, BOUNDING_BOX_THICKNESS, cv2.LINE_AA)
+            else:
+                # Bounding box around inliers
+                inlier_points = as_points([ keypoints[m.trainIdx].pt for m in inliers ])
+                rect = as_vectors(bounding_box_quad(inlier_points))
+                rect = cv2.perspectiveTransform(rect, h_inv)
+                rect = [np.int32(np.round(rect))]
+                object_image = cv2.polylines(object_image, rect, True, BOUNDING_BOX_COLOR, 1, cv2.LINE_AA)
 
         # Show matches over keypoints (if enabled)
         if args.show_matches:
