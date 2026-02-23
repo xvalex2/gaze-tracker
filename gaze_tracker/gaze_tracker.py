@@ -161,6 +161,46 @@ def find_homography(src_keypoints, dst_keypoints, matches, min_matches, ste_thre
     return h, h_inv, inliers, outliers
 
 
+def automatic_brightness_and_contrast(image, clip_hist_percent=1):
+    # https://stackoverflow.com/questions/56905592/automatic-contrast-and-brightness-adjustment-of-a-color-photo-of-a-sheet-of-pape
+
+    gray, cr, cb = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb))
+
+    # Calculate grayscale histogram
+    hist = cv2.calcHist([gray],[0],None,[256],[0,256]).T[0]
+    hist_size = len(hist)
+
+    # Calculate cumulative distribution from the histogram
+    accumulator = []
+    accumulator.append(float(hist[0]))
+    for index in range(1, hist_size):
+        accumulator.append(accumulator[index-1] + float(hist[index]))
+
+    # Locate points to clip
+    maximum = accumulator[-1]
+    clip_hist_percent *= (maximum/100.0)
+    clip_hist_percent /= 2.0
+
+    # Locate left cut
+    minimum_gray = 0
+    while accumulator[minimum_gray] < clip_hist_percent:
+        minimum_gray += 1
+
+    # Locate right cut
+    maximum_gray = hist_size -1
+    while accumulator[maximum_gray] >= (maximum - clip_hist_percent):
+        maximum_gray -= 1
+
+    # Calculate alpha and beta values
+    alpha = 255 / (maximum_gray - minimum_gray)
+    beta = -minimum_gray * alpha
+
+    gray = cv2.convertScaleAbs(gray, alpha=alpha, beta=beta)
+    image = cv2.merge((gray, cr, cb))
+    image = cv2.cvtColor(image, cv2.COLOR_YCrCb2BGR)
+    return image, alpha, beta
+
+
 class QualityStat:
     def __init__(self, log_filename = None):
         self.stat = []
@@ -508,6 +548,8 @@ def main():
         help=f'Scale factor for the resolution of the output video. Default is {DEFAULT_VIDEO_SCALE}.')
     parser.add_argument('--undistort_alpha', default=DEFAULT_UNDISTORT_ALPHA, type=float,
         help=f'Undistortion scaling parameter. 0: all the pixels in the undistorted image are valid; 1: all the source image pixels are retained in the undistorted image. Default is {DEFAULT_UNDISTORT_ALPHA}.')
+    parser.add_argument('--disable_autocorrect', action='store_true',
+        help=f'Disable brightness and contrast autocorrection.')
     parser.add_argument('--lowe_filter_ratio', default=DEFAULT_LOWE_FILTER_RATIO, type=float,
         help=f'Lowe filter ratio. 0: filter out all matches; 1: no filtering. Default is {DEFAULT_LOWE_FILTER_RATIO}.')
     parser.add_argument('--min_matches', default=DEFAULT_MIN_MATCHES, type=int,
@@ -523,7 +565,7 @@ def main():
     robust_method_group.add_argument('--rho', action='store_const', dest='robust_method', const=cv2.RHO,
         help='Use the RHO algorithm for outlier detection.')
     robust_method_group.add_argument('--lmeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
-        help='Use the LMedS algorithm for outlier detection. This is the default algorithm.')
+        help='Use the LMedS algorithm for outlier detection and fallback to RANSAC when inlier ratio is less than 50%. This is the default.')
 
     parser.add_argument('--sift_contrast_threshold', default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
         help=f'SIFT detector contrast threshold. Higher values produce fewer features. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
@@ -613,6 +655,10 @@ def main():
         out_frame = undistorter.undistort_image(frame)
         out_h, out_w, _ = out_frame.shape
 
+        # Autocorrect brightness and contrast
+        if not args.disable_autocorrect:
+            out_frame, alpha, beta = automatic_brightness_and_contrast(out_frame)
+
         # Find keypoints
         keypoints, descriptors = detector.detectAndCompute(out_frame, None)
 
@@ -624,6 +670,8 @@ def main():
         # Homography
         if len(filtered_matches) > args.min_matches:
             h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, args.robust_method, args.robust_threshold)
+            if h is None and args.robust_method == cv2.LMEDS:
+                h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, cv2.RANSAC, args.robust_threshold)
 
         quality_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
 
