@@ -3,6 +3,22 @@ import numpy as np
 import csv
 import argparse
 from os.path import isfile
+import re
+
+
+HEX_COLOR_PATTERN = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+def parse_hex_color(value: str):
+    if not HEX_COLOR_PATTERN.match(value):
+        raise argparse.ArgumentTypeError(
+            f"Color must be in format #RRGGBB, got: {value}"
+        )
+
+    r = int(value[1:3], 16)
+    g = int(value[3:5], 16)
+    b = int(value[5:7], 16)
+
+    return (b, g, r)
 
 
 def is_continuous(p1, p2, confidence_filter):
@@ -21,6 +37,8 @@ def main():
     parser.add_argument('object',    help='Image of the tracked object.')
     parser.add_argument('gaze',      help='Gaze data in the object plane (CSV file)')
     parser.add_argument('out_image', help='Output image.')
+    parser.add_argument('--color',     help='Track color in #RRGGBB format. Default is black', type=parse_hex_color, default=(0, 0, 0))
+    parser.add_argument('--thickness',  help='Track thickness. Default is 1', type=int, default=1)
     parser.add_argument('--disable-confidence-filter', action='store_true', 
         help='Do not filter out gaze points with zero confidence.')
 
@@ -60,7 +78,7 @@ def main():
     h, w, _ = image.shape
     for segment in segments:
         points = [ [ p['object_norm_x'] * w, (1.0 - p['object_norm_y']) * h ] for p in segment ]
-        cv2.polylines(image, [np.int32(points)], False, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.polylines(image, [np.int32(points)], False, args.color, args.thickness, cv2.LINE_AA)
     cv2.imwrite(args.out_image, image)
 
 
