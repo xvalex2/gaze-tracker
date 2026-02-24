@@ -5,6 +5,8 @@ import msgpack
 from os.path import join
 from os.path import isfile
 from typing import NamedTuple
+from collections import defaultdict
+from collections import deque
 import time
 import csv
 import sys
@@ -38,14 +40,6 @@ TEXT_SCALE = 0.5
 TEXT_COLOR = (128, 0, 0)
 TEXT_THICKNESS = 1
 TEXT_LINE_SPACING = 1.5
-
-
-def stddev(sum_squares, n):
-    return math.sqrt(sum_squares / n) if n else 0
-
-
-def div(a, b):
-    return a / b if b else 0
 
 
 def as_vectors(points):
@@ -161,6 +155,52 @@ def find_homography(src_keypoints, dst_keypoints, matches, min_matches, ste_thre
     return h, h_inv, inliers, outliers
 
 
+def mutual_knn_match(matcher, descriptors1, descriptors2, k):
+    matches12 = matcher.knnMatch(descriptors1, descriptors2, k=k)
+    matches21 = matcher.knnMatch(descriptors2, descriptors1, k=k)
+
+    reverse = defaultdict(set)
+    for matches in matches21:
+        for m in matches:
+            reverse[m.queryIdx].add(m.trainIdx)
+
+    result = []
+    for matches in matches12:
+        for m in matches:
+            if m.trainIdx in reverse and m.queryIdx in reverse[m.trainIdx]:
+                result.append(m)
+
+    return result
+
+
+def mutual_lowe_filter(matches, ratio):
+    map12 = defaultdict(list)
+    map21 = defaultdict(list)
+    result = []
+
+    for m in matches:
+       map12[m.queryIdx].append(m)
+
+    for l in map12.values():
+        if len(l) == 1:
+            map21[l[0].trainIdx].append(l[0])
+        else:
+            l = sorted(l, key=lambda x: x.distance)
+            if l[0].distance < l[1].distance * ratio:
+                map21[l[0].trainIdx].append(l[0])
+
+    for l in map21.values():
+        if len(l) == 1:
+            result.append(l[0])
+        else:
+            l = sorted(l, key=lambda x: x.distance)
+            if l[0].distance < l[1].distance * ratio:
+                result.append(l[0])
+
+    return result
+
+
+
 def automatic_brightness_and_contrast(image, clip_hist_percent=1):
     # https://stackoverflow.com/questions/56905592/automatic-contrast-and-brightness-adjustment-of-a-color-photo-of-a-sheet-of-pape
 
@@ -201,7 +241,7 @@ def automatic_brightness_and_contrast(image, clip_hist_percent=1):
     return image, alpha, beta
 
 
-class QualityStat:
+class TrackingStat:
     def __init__(self, log_filename = None):
         self.stat = []
         self.log_filename = log_filename
@@ -209,11 +249,9 @@ class QualityStat:
             self.csvfile = open(log_filename, 'w', newline='', encoding='utf-8')
             self.fieldnames = [
                 'frame', 'src_keypoints', 'dst_keypoints', 'detected',
-                'inliers', 'outliers', 'matches', 'inlier_ratio',
-                'mean_inlier_distance', 'mean_outlier_distance', 'mean_match_distance',
-                'stddev_inlier_distance', 'stddev_outlier_distance', 'stddev_match_distance',
-                'sum_inlier_distance', 'sum_outlier_distance', 'sum_match_distance', 
-                'ss_inlier_distance', 'ss_outlier_distance', 'ss_match_distance', 
+                'matches', 'inliers', 'outliers', 'inlier_ratio',
+                'mean_inlier_distance', 'stddev_inlier_distance', 
+                'sum_inlier_distance',  'ss_inlier_distance',
                 'rms_ste', 'sum_ste' ]
             self.writer = csv.DictWriter(self.csvfile, fieldnames=self.fieldnames)
             self.writer.writeheader()
@@ -232,15 +270,11 @@ class QualityStat:
             rms_ste, sum_ste = rms_symmetric_transfer_error(h, h_inv, src_keypoints, dst_keypoints, inliers, True)
 
         inlier_distances = [m.distance for m in inliers]
-        outlier_distances = [m.distance for m in outliers]
-
         sum_inlier_distance = np.sum(inlier_distances)
-        sum_outlier_distance = np.sum(outlier_distances)
-        sum_match_distance = sum_inlier_distance + sum_outlier_distance
-
         ss_inlier_distance = np.dot(inlier_distances, inlier_distances)
-        ss_outlier_distance = np.dot(outlier_distances, outlier_distances)
-        ss_match_distance = ss_inlier_distance + ss_outlier_distance
+        inlier_ratio = n_inliers / n_matches if n_matches else 0
+        mean_inlier_distance = sum_inlier_distance / n_inliers if n_inliers else 0
+        stddev_inlier_distance = math.sqrt(ss_inlier_distance / n_inliers - mean_inlier_distance**2) if n_inliers else 0
 
         entry = dict(
             frame = frame_num,
@@ -249,26 +283,15 @@ class QualityStat:
 
             detected = h is not None,
 
+            matches = n_matches,
             inliers = n_inliers,
             outliers = n_outliers,
-            matches = n_matches,
-            inlier_ratio = div(n_inliers, n_matches),
+            inlier_ratio = inlier_ratio,
 
-            mean_inlier_distance = div(sum_inlier_distance, n_inliers),
-            mean_outlier_distance = div(sum_outlier_distance, n_outliers),
-            mean_match_distance = div(sum_match_distance, n_matches),
-
-            stddev_inlier_distance = stddev(ss_inlier_distance, n_inliers),
-            stddev_outlier_distance = stddev(ss_outlier_distance, n_outliers),
-            stddev_match_distance = stddev(ss_match_distance, n_matches),
-
+            mean_inlier_distance = mean_inlier_distance,
+            stddev_inlier_distance = stddev_inlier_distance,
             sum_inlier_distance = sum_inlier_distance,
-            sum_outlier_distance = sum_outlier_distance,
-            sum_match_distance = sum_match_distance,
-
             ss_inlier_distance = ss_inlier_distance,
-            ss_outlier_distance = ss_outlier_distance,
-            ss_match_distance = ss_match_distance,
 
             rms_ste = rms_ste,
             sum_ste = sum_ste
@@ -285,9 +308,7 @@ class QualityStat:
         text += f"* Inliers (red): {stat['inliers']}\n"
         text += f"* Outliers (blue): {stat['outliers']}\n"
         text += f"Inlier ratio: {stat['inlier_ratio'] * 100:.1f}%\n"
-        text += f"Match distance: {stat['mean_match_distance']:.1f} stddev {stat['stddev_match_distance']:.1f}\n"
-        text += f"* Inlier distance: {stat['mean_inlier_distance']:.1f} stddev {stat['stddev_inlier_distance']:.1f}\n"
-        text += f"* Outlier distance: {stat['mean_outlier_distance']:.1f} stddev {stat['stddev_outlier_distance']:.1f}\n"
+        text += f"Inlier distance: {stat['mean_inlier_distance']:.1f} stddev {stat['stddev_inlier_distance']:.1f}\n"
         text += f"RMS STE: {stat['rms_ste']:.2f}\n"
         return text
 
@@ -310,7 +331,13 @@ class QualityStat:
         num_inliers = np.sum([e['inliers'] for e in stat])
         num_outliers = np.sum([e['outliers'] for e in stat])
         num_matches = np.sum([e['matches'] for e in stat])
-        rms_ste = stddev(np.sum([e['sum_ste'] for e in stat]), num_inliers)
+        sum_inlier_distance = np.sum([e['sum_inlier_distance'] for e in stat])
+        ss_inlier_distance = np.sum([e['ss_inlier_distance'] for e in stat])
+        mean_inlier_ratio = num_inliers / num_matches if num_matches else 0
+        mean_inlier_distance = sum_inlier_distance / num_inliers if num_inliers else 0
+        stddev_inlier_distance = math.sqrt(ss_inlier_distance / num_inliers - mean_inlier_distance**2) if num_inliers else 0
+        sum_ste = np.sum([e['sum_ste'] for e in stat])
+        rms_ste = math.sqrt(sum_ste / num_inliers) if num_inliers else 0
 
         result = {}
         result['frames'] = n
@@ -318,13 +345,9 @@ class QualityStat:
         result['mean_matches'] = num_matches / n
         result['mean_inliers'] = num_inliers / n
         result['mean_outliers'] = num_outliers / n
-        result['mean_inlier_ratio'] = div(num_inliers, num_matches)
-        result['mean_match_distance'] = div(np.sum([e['sum_match_distance'] for e in stat]), num_matches)
-        result['mean_inlier_distance'] = div(np.sum([e['sum_inlier_distance'] for e in stat]), num_inliers)
-        result['mean_outlier_distance'] = div(np.sum([e['sum_outlier_distance'] for e in stat]), num_outliers)
-        result['stddev_match_distance'] = stddev(np.sum([e['ss_match_distance'] for e in stat]), num_matches)
-        result['stddev_inlier_distance'] = stddev(np.sum([e['ss_inlier_distance'] for e in stat]), num_inliers)
-        result['stddev_outlier_distance'] = stddev(np.sum([e['ss_outlier_distance'] for e in stat]), num_outliers)
+        result['mean_inlier_ratio'] = mean_inlier_ratio
+        result['mean_inlier_distance'] = mean_inlier_distance
+        result['stddev_inlier_distance'] = stddev_inlier_distance
         result['rms_ste'] = rms_ste
         result['rms_ste_99p'] = np.percentile([e['rms_ste'] for e in stat], 99)
         return result
@@ -340,9 +363,7 @@ class QualityStat:
         text += f"* Mean inliers: {int(totals['mean_inliers'])}\n"
         text += f"* Mean outliers: {int(totals['mean_outliers'])}\n"
         text += f"Mean inlier ratio: {totals['mean_inlier_ratio'] * 100:.1f}%\n"
-        text += f"Match distance: {totals['mean_match_distance']:.1f} stddev {totals['stddev_match_distance']:.1f}\n"
-        text += f"* Inlier distance: {totals['mean_inlier_distance']:.1f} stddev {totals['stddev_inlier_distance']:.1f}\n"
-        text += f"* Outlier distance: {totals['mean_outlier_distance']:.1f} stddev {totals['stddev_outlier_distance']:.1f}\n"
+        text += f"Mean inlier distance: {totals['mean_inlier_distance']:.1f} stddev {totals['stddev_inlier_distance']:.1f}\n"
         text += f"RMS STE: {totals['rms_ste']:.2f} 99th percentile: {totals['rms_ste_99p']:.2f}\n"
         text += f"\n"
         return text
@@ -530,6 +551,115 @@ class TrackedObject:
         self.keypoints, self.descriptors = detector.detectAndCompute(self.image, None)
 
 
+class SigmaFilter:
+    class ValueStat(NamedTuple):
+        n: int
+        sum: float
+        sum_squares: float
+
+        @classmethod
+        def make(cls, values):
+            n = len(values)
+            sum = np.sum(values)
+            sum_squares = np.dot(values, values)
+            return cls(n, sum, sum_squares)
+
+    class SlidingWindow:
+        def __init__(self, window_size = 0):
+            self.window_size = window_size
+            self.stat = deque()
+            self.n = 0
+            self.sum = 0
+            self.sum_squares = 0
+            self.mean = 0
+            self.stddev = 0
+
+        def add(self, values):
+            if not len(values):
+                return
+    
+            v = SigmaFilter.ValueStat.make(values)
+            self.stat.append(v)
+            if self.window_size and len(self.stat) > self.window_size:
+                v = self.stat.popleft()
+
+            self.n = np.sum([ x.n for x in self.stat])
+            self.sum = np.sum([ x.sum for x in self.stat])
+            self.sum_squares = np.sum([ x.sum_squares for x in self.stat])
+            self.mean = self.sum / self.n
+            self.stddev = math.sqrt(self.sum_squares / self.n - self.mean*self.mean)
+
+        def clear(self):
+            self.stat.clear()
+
+    def __init__(self, sigma_threshold = 3, stat_window = 10):
+        self.sigma_threshold = sigma_threshold
+        self.distance = SigmaFilter.SlidingWindow(stat_window)
+        self.scale = SigmaFilter.SlidingWindow(stat_window)
+        self.rotx = SigmaFilter.SlidingWindow(stat_window)
+        self.roty = SigmaFilter.SlidingWindow(stat_window)
+
+    def add_inliers(self, inliers, kp1, kp2):
+        distance = [ m.distance for m in inliers]
+        scale = [ math.log(kp2[m.trainIdx].size / kp1[m.queryIdx].size) for m in inliers ]
+        rot = [ np.deg2rad(kp2[m.trainIdx].angle) - np.deg2rad(kp1[m.queryIdx].angle) for m in inliers ]
+
+        self.distance.add(distance)
+        self.scale.add(scale)
+        self.rotx.add([ math.cos(x) for x in rot ])
+        self.roty.add([ math.sin(x) for x in rot ])
+
+    def reset(self):
+        self.distance.clear()
+        self.scale.clear()
+        self.rotx.clear()
+        self.roty.clear()
+
+    def filter(self, matches, kp1, kp2):
+        if not self.distance.n:
+            return matches
+
+        mean_distance = self.distance.mean
+        distance_sigma = self.distance.stddev
+        mean_scale = self.scale.mean
+        scale_sigma = self.scale.stddev
+        mean_rot = math.atan2(self.roty.mean, self.rotx.mean)
+        rot_sigma = math.sqrt(-math.log(self.rotx.mean**2 + self.roty.mean**2))
+
+        max_distance = mean_distance + distance_sigma * self.sigma_threshold
+        scale_threshold = scale_sigma * self.sigma_threshold
+        rot_threshold = rot_sigma * self.sigma_threshold
+
+        result = []
+        distance_filtered = 0
+        scale_filtered = 0
+        rotation_filtered = 0
+        for m in matches:
+            if m.distance > max_distance:
+                distance_filtered += 1
+                continue
+
+            p1 = kp1[m.queryIdx]
+            p2 = kp2[m.trainIdx]
+
+            # Scale
+            scale = math.log(p2.size / p1.size)
+            if abs(scale - mean_scale) > scale_threshold:
+                scale_filtered += 1
+                continue
+
+            # Rotation
+            rot = np.deg2rad(p2.angle) - np.deg2rad(p1.angle)
+            theta = math.atan2(math.sin(rot-mean_rot), math.cos(rot-mean_rot))
+            if abs(theta) > rot_threshold:
+                rotation_filtered += 1
+                continue
+
+            result.append(m)
+
+        return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='gaze-tracker',
@@ -572,7 +702,7 @@ def main():
     parser.add_argument('--sift_edge_threshold', default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
         help=f'SIFT detector edge threshold. Higher values retain more features. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
-    parser.add_argument('--log', default=None, help='Tracking quality log file name.')
+    parser.add_argument('--tracking_log', default=None, help='Tracking quality log file name.')
 
     parser.add_argument('--show_inliers', action='store_true', help='Show inlier keypoints.')
     parser.add_argument('--show_outliers', action='store_true', help='Show outlier keypoints.')
@@ -615,11 +745,12 @@ def main():
     gaze_data = GazeData(gaze_filename, timestamps_filename)
 
     # Quality statistics & logging
-    quality_stat = QualityStat(args.log)
+    tracking_stat = TrackingStat(args.tracking_log)
 
     # Detector and matcher
     detector = cv2.SIFT_create(contrastThreshold=args.sift_contrast_threshold, edgeThreshold=args.sift_edge_threshold)
     matcher = cv2.BFMatcher(cv2.NORM_L2)
+    sigma_filter = SigmaFilter()
 
     # Object to track
     obj = TrackedObject(args.object, detector)
@@ -648,7 +779,7 @@ def main():
         h, h_inv = None, None
         inliers, outliers = [], []
         keypoints, descriptors = [], []
-        matches, filtered_matches = [], []
+        matches = []
         object_image = obj.image.copy()
 
         # Undistort
@@ -664,16 +795,24 @@ def main():
 
         # Match & filter matches
         if len(keypoints) > 0:
-            matches = matcher.knnMatch(obj.descriptors, descriptors, k = 2)
-            filtered_matches = lowe_filter(matches, args.lowe_filter_ratio)
+            matches = mutual_knn_match(matcher, obj.descriptors, descriptors, 5)
+            matches = sigma_filter.filter(matches, obj.keypoints, keypoints)
+            matches = mutual_lowe_filter(matches, args.lowe_filter_ratio)
 
         # Homography
-        if len(filtered_matches) > args.min_matches:
-            h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, args.robust_method, args.robust_threshold)
+        if len(matches) > args.min_matches:
+            h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, matches, args.min_matches, args.ste_threshold, args.robust_method, args.robust_threshold)
             if h is None and args.robust_method == cv2.LMEDS:
-                h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, filtered_matches, args.min_matches, args.ste_threshold, cv2.RANSAC, args.robust_threshold)
+                # Fallback to RANSAC
+                h, h_inv, inliers, outliers = find_homography(obj.keypoints, keypoints, matches, args.min_matches, args.ste_threshold, cv2.RANSAC, args.robust_threshold)
 
-        quality_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
+        if h is not None:
+            sigma_filter.add_inliers(inliers, obj.keypoints, keypoints)
+        else:
+            # Drop statistics when tracking is lost
+            sigma_filter.reset()
+
+        tracking_stat.add(frame_idx, h, h_inv, obj.keypoints, keypoints, inliers, outliers)
 
         # Project gaze points to object plane
         gaze = gaze_data.gaze_for_frame(frame_idx)
@@ -768,8 +907,8 @@ def main():
             cv2.imshow('Matches', matches_image)
 
         # Draw info text at video frame
-        frame_stat_text = quality_stat.last_stat_text() or ""
-        totals_text = quality_stat.totals_text() or ""
+        frame_stat_text = tracking_stat.last_stat_text() or ""
+        totals_text = tracking_stat.totals_text() or ""
         draw_text(out_frame, frame_stat_text + "\n" + totals_text, 16, 30)
 
         video_out.write(out_frame)
@@ -786,8 +925,8 @@ def main():
         if should_stop:
             break
 
-    print(f"\n\nStatistics:\n{quality_stat.totals_text()}")
-    quality_stat.close()
+    print(f"\n\nStatistics:\n{tracking_stat.totals_text()}")
+    tracking_stat.close()
     data_writer.close()
     video_out.release()
     cv2.destroyAllWindows()
