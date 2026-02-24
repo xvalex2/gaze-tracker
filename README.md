@@ -45,46 +45,99 @@ pip install .
 
 ### `gaze-tracker`
 
-Converts gaze coordinates from video frames to the object plane and produces CSV and video outputs.
+Transforms gaze coordinates from the video image plane (egocentric scene camera) into the reference object plane using feature-based homography estimation. The tool expects a data directory containing the eye-tracking video and gaze coordinates, and a reference image of the tracked object.
 
-```bash
-usage: gaze-tracker [-h] [options] data_path object video_out data_out
+```
+usage: gaze-tracker [-h] [--start_frame START_FRAME] [--end_frame END_FRAME]
+                    [--video_scale VIDEO_SCALE]
+                    [--undistort_alpha UNDISTORT_ALPHA]
+                    [--disable_autocorrect]
+                    [--lowe_filter_ratio LOWE_FILTER_RATIO]
+                    [--min_matches MIN_MATCHES]
+                    [--ste_threshold STE_THRESHOLD] [--gms_filter]
+                    [--gms_threshold GMS_THRESHOLD]
+                    [--robust_threshold ROBUST_THRESHOLD]
+                    [--ransac | --rho | --lmeds]
+                    [--sift_contrast_threshold SIFT_CONTRAST_THRESHOLD]
+                    [--sift_edge_threshold SIFT_EDGE_THRESHOLD]
+                    [--tracking_log TRACKING_LOG]
+                    [--show_inliers] [--show_outliers]
+                    [--show_keypoints] [--show_object]
+                    [--show_matches]
+                    data_path object video_out data_out
 ```
 
-**Positional arguments:**
+#### Positional arguments
 
-* `data_path` - path to the data folder
-* `object` - image of the target object
-* `video_out` - output video file
-* `data_out` - output CSV file
+* **`data_path`** Path to the input data directory (video and gaze data).
+* **`object`** Reference image of the planar object to be tracked.
+* **`video_out`** Path to the output video file with visualization overlays.
+* **`data_out`** Path to the output CSV file containing transformed gaze coordinates in the object coordinate system.
 
-**Options include:**
+#### Frame range and preprocessing
 
-* `--start_frame`, `--end_frame` - process a subset of frames
-* `--video_scale` - scale factor for output video
-* `--undistort_alpha` - camera undistortion scaling
-* `--lowe_filter_ratio`, `--min_matches` - feature matching parameters
-* `--ransac`, `--rho`, `--lemeds` - outlier detection algorithms
-* `--sift_contrast_threshold`, `--sift_edge_threshold` - SIFT parameters
-* `--show_keypoints`, `--show_object`, `--show_object_keypoints` - visualization options
+* **`--start_frame`** Index of the first frame to process.
+* **`--end_frame`** Index of the last frame to process.
+* **`--video_scale`** Scale factor applied to the output video resolution. Default: `1.2`.
+* **`--undistort_alpha`** Undistortion scaling parameter.  
+  `0` — only valid pixels are preserved  
+  `1` — all original pixels are retained  
+  Default: `0.5`.
+* **`--disable_autocorrect`** Disable automatic brightness and contrast correction.
+
+#### Feature detection and matching
+
+* **`--sift_contrast_threshold`** SIFT contrast threshold. Higher values reduce the number of detected features. Default: `0.04`.
+* **`--sift_edge_threshold`** SIFT edge threshold. Higher values retain more edge-like features. Default: `10.0`.
+* **`--lowe_filter_ratio`** Lowe ratio test threshold for KNN matching.  
+  `0` — reject all matches  
+  `1` — no ratio filtering  
+  Default: `0.8`.
+* **`--gms_filter`** Enable Grid-based Motion Statistics (GMS) filtering.
+* **`--gms_threshold`** GMS consistency threshold. Larger values enforce stricter filtering. Default: `3`.
+* **`--min_matches`** Minimum number of matches required to estimate homography. Default: `20`.
+
+#### Robust homography estimation
+
+One robust estimator can be selected:
+
+* **`--lmeds`** Use LMedS for outlier detection and automatically fall back to RANSAC if the inlier ratio is below 50%. This is the default.
+* **`--ransac`** Use RANSAC for outlier detection.
+* **`--rho`** Use RHO-based robust estimation.
+
+Additional parameters:
+
+* **`--robust_threshold`** Reprojection error threshold (in pixels) used by RANSAC or RHO. Default: `5`.
+* **`--ste_threshold`** Maximum allowed symmetric transfer error (in pixels) for accepting a homography. Default: `50`.
+
+#### Logging and visualization
+
+* **`--tracking_log`** Output file for detailed tracking diagnostics.
+* **`--show_inliers`** Visualize inlier keypoints.
+* **`--show_outliers`** Visualize rejected keypoints.
+* **`--show_keypoints`** Show all detected keypoints, including unmatched ones.
+* **`--show_object`** Display the reference object and overlay the transformed gaze trajectory.
+* **`--show_matches`** Visualize keypoint correspondences between the frame and the reference object.
 
 ### `trajectory`
 
 Draws gaze trajectories in the object plane from the CSV output of `gaze-tracker`.
 
 ```bash
-usage: trajectory [-h] [--disable-confidence-filter] object gaze out_image
+usage: trajectory [-h] [--color COLOR] [--thickness THICKNESS] [--disable-confidence-filter] object gaze out_image
 ```
 
 **Arguments:**
 
-* `object` - image of the tracked object
-* `gaze` - gaze CSV file in object coordinates
-* `out_image` - output image file
+* `object` Image of the tracked object
+* `gaze` Gaze CSV file in object coordinates
+* `out_image` Output image file
 
-**Option:**
+**Options:**
 
-* `--disable-confidence-filter` - include all gaze points, even those with zero confidence
+* `--disable-confidence-filter` Include all gaze points, even those with zero confidence.
+* `--color` Trajectory color in #RRGGBB format. Default: black.
+* `--thickness` Trajectory thicknesst. Default: `1`.
 
 ### `heatmap`
 
@@ -96,15 +149,15 @@ usage: heatmap [-h] [--alpha ALPHA] [--sigma SIGMA] [--disable-confidence-filter
 
 **Arguments:**
 
-* `object` - image of the tracked object
-* `gaze` - gaze CSV file in object coordinates
-* `out_image` - output image file
+* `object` Image of the tracked object
+* `gaze` Gaze CSV file in object coordinates
+* `out_image` Output image file
 
 **Options:**
 
-* `--alpha` - transparency of heatmap overlay (default 0.5)
-* `--sigma` - gaussian blur sigma (default 10)
-* `--disable-confidence-filter` - include all gaze points, even those with zero confidence
+* `--alpha` Transparency of heatmap overlay (default 0.5)
+* `--sigma` Gaussian blur sigma (default 10)
+* `--disable-confidence-filter` Include all gaze points, even those with zero confidence
 
 ## Example Workflow
 
