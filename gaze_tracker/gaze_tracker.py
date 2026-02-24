@@ -704,7 +704,7 @@ def main():
     robust_method_group.add_argument('--rho', action='store_const', dest='robust_method', const=cv2.RHO,
         help='Use the RHO algorithm for outlier detection.')
     robust_method_group.add_argument('--lmeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
-        help='Use the LMedS algorithm for outlier detection and fallback to RANSAC if the inlier ratio is below 50%. This is the default.')
+        help='Use the LMedS algorithm for outlier detection and fallback to RANSAC if the inlier ratio is below 50%%. This is the default.')
 
     parser.add_argument('--sift_contrast_threshold', default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
         help=f'SIFT detector contrast threshold. Higher values produce fewer features. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
