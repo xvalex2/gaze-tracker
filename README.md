@@ -41,9 +41,7 @@ venv\Scripts\activate      # Windows
 pip install .
 ```
 
-## Scripts
-
-### `gaze-tracker`
+## gaze-tracker
 
 Transforms gaze coordinates from the video image plane (egocentric scene camera) into the reference object plane using feature-based homography estimation. The tool expects a data directory containing the eye-tracking video and gaze coordinates, and a reference image of the tracked object.
 
@@ -67,14 +65,14 @@ usage: gaze-tracker [-h] [--start_frame START_FRAME] [--end_frame END_FRAME]
                     data_path object video_out data_out
 ```
 
-#### Positional arguments
+### Positional arguments
 
 * **`data_path`** Path to the input data directory (video and gaze data).
 * **`object`** Reference image of the planar object to be tracked.
 * **`video_out`** Path to the output video file with visualization overlays.
 * **`data_out`** Path to the output CSV file containing transformed gaze coordinates in the object coordinate system.
 
-#### Frame range and preprocessing
+### Frame range and preprocessing
 
 * **`--start_frame`** Index of the first frame to process.
 * **`--end_frame`** Index of the last frame to process.
@@ -85,7 +83,7 @@ usage: gaze-tracker [-h] [--start_frame START_FRAME] [--end_frame END_FRAME]
   Default: `0.5`.
 * **`--disable_autocorrect`** Disable automatic brightness and contrast correction.
 
-#### Feature detection and matching
+### Feature detection and matching
 
 * **`--sift_contrast_threshold`** SIFT contrast threshold. Higher values reduce the number of detected features. Default: `0.04`.
 * **`--sift_edge_threshold`** SIFT edge threshold. Higher values retain more edge-like features. Default: `10.0`.
@@ -97,7 +95,7 @@ usage: gaze-tracker [-h] [--start_frame START_FRAME] [--end_frame END_FRAME]
 * **`--gms_threshold`** GMS consistency threshold. Larger values enforce stricter filtering. Default: `3`.
 * **`--min_matches`** Minimum number of matches required to estimate homography. Default: `20`.
 
-#### Robust homography estimation
+### Robust homography estimation
 
 One robust estimator can be selected:
 
@@ -110,7 +108,7 @@ Additional parameters:
 * **`--robust_threshold`** Reprojection error threshold (in pixels) used by RANSAC or RHO. Default: `5`.
 * **`--ste_threshold`** Maximum allowed symmetric transfer error (in pixels) for accepting a homography. Default: `50`.
 
-#### Logging and visualization
+### Logging and visualization
 
 * **`--tracking_log`** Output file for detailed tracking diagnostics.
 * **`--show_inliers`** Visualize inlier keypoints.
@@ -119,7 +117,7 @@ Additional parameters:
 * **`--show_object`** Display the reference object and overlay the transformed gaze trajectory.
 * **`--show_matches`** Visualize keypoint correspondences between the frame and the reference object.
 
-### `trajectory`
+## trajectory
 
 Draws gaze trajectories in the object plane from the CSV output of `gaze-tracker`.
 
@@ -139,7 +137,7 @@ usage: trajectory [-h] [--color COLOR] [--thickness THICKNESS] [--disable-confid
 * `--color` Trajectory color in #RRGGBB format. Default: black.
 * `--thickness` Trajectory thicknesst. Default: `1`.
 
-### `heatmap`
+## heatmap
 
 Generates dwell-time heatmaps of gaze on the object plane.
 
