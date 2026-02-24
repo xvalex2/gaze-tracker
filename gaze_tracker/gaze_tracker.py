@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import cv2.xfeatures2d
 import argparse
 import msgpack
 from os.path import join
@@ -17,6 +18,7 @@ DEFAULT_UNDISTORT_ALPHA = 0.5
 DEFAULT_LOWE_FILTER_RATIO = 0.8
 DEFAULT_MIN_MATCHES = 20
 DEFAULT_STE_THRESHOLD = 50
+DEFAULT_GMS_THRESHOLD = 3
 
 DEFAULT_ROBUST_METHOD = cv2.LMEDS
 DEFAULT_ROBUST_THRESHOLD = 5
@@ -223,19 +225,21 @@ def automatic_brightness_and_contrast(image, clip_hist_percent=1):
 
     # Locate left cut
     minimum_gray = 0
-    while accumulator[minimum_gray] < clip_hist_percent:
+    while accumulator[minimum_gray] < clip_hist_percent and minimum_gray < len(accumulator) - 1:
         minimum_gray += 1
 
     # Locate right cut
     maximum_gray = hist_size -1
-    while accumulator[maximum_gray] >= (maximum - clip_hist_percent):
+    while accumulator[maximum_gray] >= (maximum - clip_hist_percent) and maximum_gray > 0:
         maximum_gray -= 1
 
-    # Calculate alpha and beta values
-    alpha = 255 / (maximum_gray - minimum_gray)
-    beta = -minimum_gray * alpha
+    # Adjust image
+    alpha, beta = 1.0, 0
+    if maximum_gray - minimum_gray > 10:
+        alpha = 255 / (maximum_gray - minimum_gray)
+        beta = -minimum_gray * alpha        
+        gray = cv2.convertScaleAbs(gray, alpha=alpha, beta=beta)
 
-    gray = cv2.convertScaleAbs(gray, alpha=alpha, beta=beta)
     image = cv2.merge((gray, cr, cb))
     image = cv2.cvtColor(image, cv2.COLOR_YCrCb2BGR)
     return image, alpha, beta
@@ -257,8 +261,9 @@ class TrackingStat:
             self.writer.writeheader()
 
     def close(self):
-        self.csvfile.write(self.totals_text())
-        self.csvfile.close()
+        if self.log_filename is not None:
+            self.csvfile.write(self.totals_text())
+            self.csvfile.close()
 
     def add(self, frame_num, h, h_inv, src_keypoints, dst_keypoints, inliers, outliers):
         n_inliers = len(inliers)
@@ -663,9 +668,9 @@ class SigmaFilter:
 def main():
     parser = argparse.ArgumentParser(
         prog='gaze-tracker',
-        description='Converts eye-tracking coordinates from the video plane to the plane of the observed object.')
+        description='Transforms eye-tracking coordinates from the video image plane to the reference object plane.')
     parser.add_argument('data_path', help='Path to the data folder.')
-    parser.add_argument('object',    help='Image of the object to track.')
+    parser.add_argument('object',    help='Reference image of the object to be tracked.')
     parser.add_argument('video_out', help='Output video file.')
     parser.add_argument('data_out',  help='Output CSV file.')
 
@@ -679,36 +684,40 @@ def main():
     parser.add_argument('--undistort_alpha', default=DEFAULT_UNDISTORT_ALPHA, type=float,
         help=f'Undistortion scaling parameter. 0: all the pixels in the undistorted image are valid; 1: all the source image pixels are retained in the undistorted image. Default is {DEFAULT_UNDISTORT_ALPHA}.')
     parser.add_argument('--disable_autocorrect', action='store_true',
-        help=f'Disable brightness and contrast autocorrection.')
+        help=f'Disable automatic brightness and contrast correction.')
     parser.add_argument('--lowe_filter_ratio', default=DEFAULT_LOWE_FILTER_RATIO, type=float,
-        help=f'Lowe filter ratio. 0: filter out all matches; 1: no filtering. Default is {DEFAULT_LOWE_FILTER_RATIO}.')
+        help=f'Lowe ratio test threshold. 0: filter out all matches; 1: no filtering. Default is {DEFAULT_LOWE_FILTER_RATIO}.')
     parser.add_argument('--min_matches', default=DEFAULT_MIN_MATCHES, type=int,
         help=f'Minimum number of matches for homography estimation. Default is {DEFAULT_MIN_MATCHES}.')
     parser.add_argument('--ste_threshold', default=DEFAULT_STE_THRESHOLD, type=float,
-        help=f'Maximum symmetric transfer error in pixels. Default is {DEFAULT_STE_THRESHOLD}.')
+        help=f'Maximum allowed symmetric transfer error in pixels. Default is {DEFAULT_STE_THRESHOLD}.')
+    parser.add_argument('--gms_filter', action='store_true',
+        help=f'Enable GMS filtering of keypoint matches. Disabled by default.')
+    parser.add_argument('--gms_threshold', default=DEFAULT_GMS_THRESHOLD, type=float,
+        help=f'Threshold for GMS filtering. Higher values result in stricter filtering. Default is {DEFAULT_GMS_THRESHOLD}.')
 
     parser.add_argument('--robust_threshold', default=DEFAULT_ROBUST_THRESHOLD, type=float,
-        help=f'Threshold used in RANSAC/RHO robust method. Default is {DEFAULT_ROBUST_THRESHOLD}')
+        help=f'Reprojection error threshold used in RANSAC or RHO. Default is {DEFAULT_ROBUST_THRESHOLD}')
     robust_method_group = parser.add_mutually_exclusive_group()
     robust_method_group.add_argument('--ransac', action='store_const', dest='robust_method', const=cv2.RANSAC,
         help='Use the RANSAC algorithm for outlier detection.')
     robust_method_group.add_argument('--rho', action='store_const', dest='robust_method', const=cv2.RHO,
         help='Use the RHO algorithm for outlier detection.')
     robust_method_group.add_argument('--lmeds', action='store_const', dest='robust_method', const=cv2.LMEDS,
-        help='Use the LMedS algorithm for outlier detection and fallback to RANSAC when inlier ratio is less than 50%. This is the default.')
+        help='Use the LMedS algorithm for outlier detection and fallback to RANSAC if the inlier ratio is below 50%. This is the default.')
 
     parser.add_argument('--sift_contrast_threshold', default=DEFAULT_SIFT_CONTRAST_THRESHOLD, type=float,
         help=f'SIFT detector contrast threshold. Higher values produce fewer features. Default is {DEFAULT_SIFT_CONTRAST_THRESHOLD}.')
     parser.add_argument('--sift_edge_threshold', default=DEFAULT_SIFT_EDGE_THRESHOLD, type=float,
         help=f'SIFT detector edge threshold. Higher values retain more features. Default is {DEFAULT_SIFT_EDGE_THRESHOLD}.')
     
-    parser.add_argument('--tracking_log', default=None, help='Tracking quality log file name.')
+    parser.add_argument('--tracking_log', default=None, help='Output file name for the tracking log.')
 
     parser.add_argument('--show_inliers', action='store_true', help='Show inlier keypoints.')
     parser.add_argument('--show_outliers', action='store_true', help='Show outlier keypoints.')
     parser.add_argument('--show_keypoints', action='store_true', help='Show all keypoints, including unmatched.')
     parser.add_argument('--show_object', action='store_true', help='Display the object and overlay the gaze track.')
-    parser.add_argument('--show_matches', action='store_true', help='Display keypoint correspondance.')
+    parser.add_argument('--show_matches', action='store_true', help='Display keypoint correspondence.')
 
     parser.set_defaults(robust_method=DEFAULT_ROBUST_METHOD)
     args = parser.parse_args()
@@ -797,6 +806,13 @@ def main():
         if len(keypoints) > 0:
             matches = mutual_knn_match(matcher, obj.descriptors, descriptors, 5)
             matches = sigma_filter.filter(matches, obj.keypoints, keypoints)
+            if args.gms_filter:
+                matches = cv2.xfeatures2d.matchGMS(
+                    (obj.w, obj.h), (out_w, out_h),
+                    obj.keypoints, keypoints, matches,
+                    withRotation = True,
+                    withScale = True, 
+                    thresholdFactor = args.gms_threshold)
             matches = mutual_lowe_filter(matches, args.lowe_filter_ratio)
 
         # Homography
