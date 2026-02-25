@@ -1,6 +1,6 @@
 # Gaze-Tracker
 
-**Gaze-Tracker** is a Python-based tool for analyzing eye-tracking data and mapping gaze coordinates onto the plane of a visual object. The system takes eye-tracking recordings from wearable devices (e.g., Pupil Labs glasses) and produces gaze trajectories and heatmaps for visual analysis.
+**Gaze-Tracker** is a Python-based tool for analyzing eye-tracking data and mapping gaze coordinates onto the plane of a visual object. The system takes eye-tracking recordings from wearable devices (e.g., Pupil Labs glasses) and produces gaze trajectories and heatmaps for further analysis.
 
 ## Features
 
@@ -9,9 +9,17 @@
 * Produces dwell-time heatmaps on objects.
 * Supports configurable parameters for keypoint detection, robust matching, and video processing.
 
+## Workflow
+
+![](doc/images/workflow.jpg)
+
 ## Input Data
 
-Gaze-Tracker uses recordings from [**Pupil Player**](https://github.com/pupil-labs/pupil). Required files:
+Gaze-Tracker uses recordings from [Pupil Player](https://github.com/pupil-labs/pupil).
+
+You can get samples from [Pupil Cloud](https://pupil-labs.com/products/cloud) demo workspace. Open sample data in [Pupil Player](https://github.com/pupil-labs/pupil), it will automatically convert data to compatible format.
+
+Required files:
 
 * `world.mp4` - video from the external camera
 * `world.intrinsics` - camera intrinsics
@@ -67,55 +75,55 @@ usage: gaze-tracker [-h] [--start_frame START_FRAME] [--end_frame END_FRAME]
 
 ### Positional arguments
 
-* **`data_path`** Path to the input data directory (video and gaze data).
-* **`object`** Reference image of the planar object to be tracked.
-* **`video_out`** Path to the output video file with visualization overlays.
-* **`data_out`** Path to the output CSV file containing transformed gaze coordinates in the object coordinate system.
+* `data_path` Path to the input data directory (video and gaze data).
+* `object` Reference image of the planar object to be tracked.
+* `video_out` Path to the output video file with visualization overlays.
+* `data_out` Path to the output CSV file containing transformed gaze coordinates in the object coordinate system.
 
 ### Frame range and preprocessing
 
-* **`--start_frame`** Index of the first frame to process.
-* **`--end_frame`** Index of the last frame to process.
-* **`--video_scale`** Scale factor applied to the output video resolution. Default: `1.2`.
-* **`--undistort_alpha`** Undistortion scaling parameter.  
+* `--start_frame` Index of the first frame to process.
+* `--end_frame` Index of the last frame to process.
+* `--video_scale` Scale factor applied to the output video resolution. Default: `1.2`.
+* `--undistort_alpha` Undistortion scaling parameter.  
   `0` — only valid pixels are preserved  
   `1` — all original pixels are retained  
   Default: `0.5`.
-* **`--disable_autocorrect`** Disable automatic brightness and contrast correction.
+* `--disable_autocorrect` Disable automatic brightness and contrast correction.
 
 ### Feature detection and matching
 
-* **`--sift_contrast_threshold`** SIFT contrast threshold. Higher values reduce the number of detected features. Default: `0.04`.
-* **`--sift_edge_threshold`** SIFT edge threshold. Higher values retain more edge-like features. Default: `10.0`.
-* **`--lowe_filter_ratio`** Lowe ratio test threshold for KNN matching.  
+* `--sift_contrast_threshold` SIFT contrast threshold. Higher values reduce the number of detected features. Default: `0.04`.
+* `--sift_edge_threshold` SIFT edge threshold. Higher values retain more edge-like features. Default: `10.0`.
+* `--lowe_filter_ratio` Lowe ratio test threshold for KNN matching.  
   `0` — reject all matches  
   `1` — no ratio filtering  
   Default: `0.8`.
-* **`--gms_filter`** Enable Grid-based Motion Statistics (GMS) filtering.
-* **`--gms_threshold`** GMS consistency threshold. Larger values enforce stricter filtering. Default: `3`.
-* **`--min_matches`** Minimum number of matches required to estimate homography. Default: `20`.
+* `--gms_filter` Enable Grid-based Motion Statistics (GMS) filtering.
+* `--gms_threshold` GMS consistency threshold. Larger values enforce stricter filtering. Default: `3`.
+* `--min_matches` Minimum number of matches required to estimate homography. Default: `20`.
 
 ### Robust homography estimation
 
 One robust estimator can be selected:
 
-* **`--lmeds`** Use LMedS for outlier detection and automatically fall back to RANSAC if the inlier ratio is below 50%. This is the default.
-* **`--ransac`** Use RANSAC for outlier detection.
-* **`--rho`** Use RHO-based robust estimation.
+* `--lmeds` Use LMedS for robust homography estimation, automatically fall back to RANSAC if the inlier ratio is below 50%. This is the default.
+* `--ransac` Use RANSAC for robust homography estimation.
+* `--rho` Use RHO-based for robust homography estimation.
 
 Additional parameters:
 
-* **`--robust_threshold`** Reprojection error threshold (in pixels) used by RANSAC or RHO. Default: `5`.
-* **`--ste_threshold`** Maximum allowed symmetric transfer error (in pixels) for accepting a homography. Default: `50`.
+* `--robust_threshold` Reprojection error threshold (in pixels) used by RANSAC or RHO. Default: `5`.
+* `--ste_threshold` Maximum allowed symmetric transfer error (in pixels) for accepting a homography. Default: `50`.
 
 ### Logging and visualization
 
-* **`--tracking_log`** Output file for detailed tracking diagnostics.
-* **`--show_inliers`** Visualize inlier keypoints.
-* **`--show_outliers`** Visualize rejected keypoints.
-* **`--show_keypoints`** Show all detected keypoints, including unmatched ones.
-* **`--show_object`** Display the reference object and overlay the transformed gaze trajectory.
-* **`--show_matches`** Visualize keypoint correspondences between the frame and the reference object.
+* `--tracking_log` Output file for detailed tracking diagnostics.
+* `--show_inliers` Visualize inlier keypoints.
+* `--show_outliers` Visualize rejected keypoints.
+* `--show_keypoints` Show all detected keypoints, including unmatched ones.
+* `--show_object` Display the reference object and overlay the transformed gaze trajectory.
+* `--show_matches` Visualize keypoint correspondences between the frame and the reference object.
 
 ## trajectory
 
@@ -135,7 +143,7 @@ usage: trajectory [-h] [--color COLOR] [--thickness THICKNESS] [--disable-confid
 
 * `--disable-confidence-filter` Include all gaze points, even those with zero confidence.
 * `--color` Trajectory color in #RRGGBB format. Default: black.
-* `--thickness` Trajectory thicknesst. Default: `1`.
+* `--thickness` Trajectory thickness. Default: `1`.
 
 ## heatmap
 
